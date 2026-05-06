@@ -17,7 +17,7 @@ const CATALOG = [
   { id: "CG-003", name: "Semblant Pedestal", category: "Case Goods", price: 753, description: 'Materials: walnut veneer / stainless steel | Finish: high gloss lacquer walnut / polished SS | Dimensions: 13" × 13" × 4\'2"H' },
 ];
 
-const ADMIN_PASSWORD = "817admin";
+const ADMIN_PASSWORD = "eddysilverlake817";
 const STATUSES = ["Requested", "Quote Sent", "In Production", "Completed", "Cancelled"];
 const STATUS_STYLE = {
   "Requested":     { color: "#7A5500", bg: "#FFF8E6", border: "#C8A000" },
@@ -194,6 +194,7 @@ function ClientView({ onSubmitted }) {
   const [done, setDone] = useState(false);
   const [lastId, setLastId] = useState("");
   const [sample, setSample] = useState({ inCart: false, dimensions: "", description: "" });
+  const [pricingAcked, setPricingAcked] = useState(false);
 
   const cats = ["All", "Tables", "Seating", "Case Goods"];
   const list = CATALOG.filter(i =>
@@ -211,6 +212,7 @@ function ClientView({ onSubmitted }) {
 
   const submit = async () => {
     if (!hasItems) return;
+    if (rtype === "Quote Request" && !pricingAcked) return;
     const orders = await loadOrders();
     const id = genId(rtype);
     const items = cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, modifications: i.modifications }));
@@ -491,6 +493,10 @@ function AdminView() {
   const updStatus = async (id, s) => {
     const u = orders.map(o => o.id === id ? { ...o, status: s } : o);
     setOrders(u); await saveOrders(u);
+    if (s === "Quote Sent") {
+      const order = u.find(o => o.id === id);
+      if (order) fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order }) }).catch(() => {});
+    }
   };
   const updSamplePrice = async (orderId, price) => {
     const parsed = parseFloat(price) || 0;
@@ -501,6 +507,8 @@ function AdminView() {
       return { ...o, items, total };
     });
     setOrders(u); await saveOrders(u);
+    const updatedOrder = u.find(o => o.id === orderId);
+    if (updatedOrder) fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: updatedOrder }) }).catch(() => {});
   };
   const updProjectInfo = async (orderId, field, value) => {
     const u = orders.map(o => o.id === orderId ? { ...o, [field]: value } : o);
