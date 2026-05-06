@@ -1,0 +1,23 @@
+const CLIENT_EMAIL = "julianlopezbirlain@gmail.com";
+const FROM_EMAIL = "julian@817hospitality.com";
+const fmt = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:0}).format(n);
+const fmtDate = d => new Date(d).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
+function buildHtml(order){
+  const sampleItem=order.items.find(i=>i.id==="SAM-817");
+  const samplePriced=sampleItem&&sampleItem.price>0;
+  const hasSample=!!sampleItem;
+  return `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#F5F4F1;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;"><table width="100%" cellpadding="0" cellspacing="0" style="background:#F5F4F1;padding:40px 0;"><tr><td align="center"><table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border:1px solid #E0DDD8;"><tr><td style="background:#0A0A0A;padding:24px 32px;"><div style="font-family:monospace;font-size:13px;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:#fff;">8 1 7 &nbsp; HOSPITALITY</div><div style="font-family:monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:#555;margin-top:4px;">× THE FUTURE PERFECT — TRADE PORTAL</div></td></tr><tr><td style="background:#F5F4F1;padding:14px 32px;border-bottom:2px solid #0A0A0A;"><span style="font-family:monospace;font-size:9px;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;">QUOTE UPDATE &nbsp;&nbsp;</span><span style="font-family:monospace;font-size:9px;letter-spacing:0.14em;color:#999;">${order.id}</span></td></tr><tr><td style="padding:28px 32px 20px;"><p style="font-size:14px;color:#333;line-height:1.6;margin:0;">Your quote <strong>${order.id}</strong> has been reviewed. ${samplePriced?"Sample pricing has been confirmed and your updated total is below.":"Your quote status has been updated to: "+order.status+"."}</p></td></tr><tr><td style="padding:0 32px 24px;"><table width="100%" cellpadding="0" cellspacing="0">${order.items.map(it=>`<tr><td style="font-size:12px;text-transform:uppercase;font-weight:500;padding:8px 0;border-bottom:1px solid #ECEAE5;">${it.name}</td><td style="font-family:monospace;font-size:11px;padding:8px 0;border-bottom:1px solid #ECEAE5;text-align:right;">${it.id==="SAM-817"?(it.price>0?fmt(it.price):"TBD"):fmt(it.price*it.qty)}</td></tr>`).join("")}</table><table width="100%" style="margin-top:14px;border-top:2px solid #0A0A0A;"><tr><td style="font-family:monospace;font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:#888;padding-top:12px;">Confirmed Total</td><td style="font-family:monospace;font-size:18px;font-weight:700;color:#0A0A0A;text-align:right;padding-top:12px;">${hasSample&&!samplePriced?fmt(order.total)+" + samples TBD":fmt(order.total)}</td></tr></table></td></tr>${order.approvalDate||order.leadTime?`<tr><td style="padding:0 32px 24px;"><table width="100%" style="background:#0A0A0A;padding:16px 20px;"><tr>${order.approvalDate?`<td><div style="font-family:monospace;font-size:8px;letter-spacing:0.2em;text-transform:uppercase;color:#555;margin-bottom:4px;">Approval Date</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:#fff;">${fmtDate(order.approvalDate+"T12:00:00")}</div></td>`:""}${order.leadTime?`<td><div style="font-family:monospace;font-size:8px;letter-spacing:0.2em;text-transform:uppercase;color:#555;margin-bottom:4px;">Lead Time</div><div style="font-family:monospace;font-size:13px;font-weight:600;color:#fff;">${order.leadTime}</div></td>`:""}</tr></table></td></tr>`:""}<tr><td style="background:#0A0A0A;padding:20px 32px;"><div style="font-family:monospace;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#555;">817 Hospitality × The Future Perfect Trade Portal</div></td></tr></table></td></tr></table></body></html>`;
+}
+export default async function handler(req,res){
+  if(req.method!=="POST")return res.status(405).json({error:"Method not allowed"});
+  const{order}=req.body;
+  if(!order)return res.status(400).json({error:"Missing order"});
+  const KEY=process.env.RESEND_API_KEY;
+  if(!KEY)return res.status(500).json({error:"Missing key"});
+  const ref=`<${order.id}@817hospitality.com>`;
+  try{
+    const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:`Bearer ${KEY}`,"Content-Type":"application/json"},body:JSON.stringify({from:FROM_EMAIL,to:CLIENT_EMAIL,subject:`Re: Your Quote Request — ${order.id}`,html:buildHtml(order),headers:{"In-Reply-To":ref,"References":ref}})});
+    if(!r.ok)throw new Error(JSON.stringify(await r.json()));
+    return res.status(200).json({success:true});
+  }catch(e){console.error(e);return res.status(500).json({error:e.message});}
+}
