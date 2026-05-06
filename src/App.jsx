@@ -355,7 +355,13 @@ function ClientView({ onSubmitted }) {
               ))}
             </div>
             <textarea className="nta" rows={2} placeholder="Timeline, project notes..." value={notes} onChange={e => setNotes(e.target.value)} />
-            <button className="sbtn" onClick={submit}>Submit {rtype === "Quote Request" ? "Quote Request" : "Purchase Order"} →</button>
+            {rtype === "Quote Request" && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14, padding: "12px 14px", background: "#F5F4F1", border: "1px solid #DDDAD3" }}>
+                <input type="checkbox" id="pricing-ack" checked={pricingAcked} onChange={e => setPricingAcked(e.target.checked)} style={{ marginTop: 2, cursor: "pointer", accentColor: "#0A0A0A", flexShrink: 0 }} />
+                <label htmlFor="pricing-ack" style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.08em", color: "#666", lineHeight: 1.6, cursor: "pointer" }}>I understand that prices shown are indicative of standard dimensions only and are subject to change pending review of any requested modifications.</label>
+              </div>
+            )}
+            <button className="sbtn" onClick={submit} style={{ opacity: (rtype === "Quote Request" && !pricingAcked) ? 0.3 : 1 }}>Submit {rtype === "Quote Request" ? "Quote Request" : "Purchase Order"} →</button>
           </div>
         )}
       </div>
