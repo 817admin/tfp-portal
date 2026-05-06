@@ -225,7 +225,7 @@ function ClientView({ onSubmitted }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order }),
     }).catch(err => console.error("Email send failed:", err));
-    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); onSubmitted();
+    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); onSubmitted();
   };
 
   if (done) return (
@@ -580,35 +580,42 @@ function AdminView() {
                             <table className="ltbl">
                               <thead><tr><th>ID</th><th>Piece</th><th>Qty</th><th>Unit</th><th style={{ textAlign: "right" }}>Subtotal</th></tr></thead>
                               <tbody>
-                                {order.items.map((it, i) => (
-                                  <tr key={i}>
-                                    <td className="lid">{it.id}</td>
-                                    <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}</td>
-                                    <td>{it.id === "SAM-817" ? "—" : it.qty}</td>
-                                    <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
-                                      {it.id === "SAM-817" ? (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                          <span style={{ color: "#888", fontSize: 10 }}>$</span>
-                                          <input
-                                            type="number"
-                                            min={0}
-                                            placeholder="0"
-                                            defaultValue={it.price || ""}
-                                            onBlur={e => updSamplePrice(order.id, e.target.value)}
-                                            onClick={e => e.stopPropagation()}
-                                            style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#fff", padding: "3px 6px", width: 90, outline: "none", color: "#0A0A0A" }}
-                                          />
-                                          <span style={{ fontSize: 9, color: "#AAA", letterSpacing: "0.1em", textTransform: "uppercase" }}>set price</span>
-                                        </div>
-                                      ) : fmt(it.price)}
-                                    </td>
-                                    <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 600, textAlign: "right" }}>
-                                      {it.id === "SAM-817"
-                                        ? (it.price > 0 ? fmt(it.price) : <span style={{ color: "#AAA", fontSize: 10, letterSpacing: "0.1em" }}>TBD</span>)
-                                        : fmt(it.price * it.qty)}
-                                    </td>
-                                  </tr>
-                                ))}
+                                {order.items.map((it, i) => {
+                                  const isQuote = order.requestType === "Quote Request";
+                                  const isSample = it.id === "SAM-817";
+                                  return (
+                                    <tr key={i}>
+                                      <td className="lid">{it.id}</td>
+                                      <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}</td>
+                                      <td>{isSample ? "—" : it.qty}</td>
+                                      <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
+                                        {isQuote ? (
+                                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                            <span style={{ color: "#888", fontSize: 10 }}>$</span>
+                                            <input type="number" min={0}
+                                              placeholder={String(it.price || 0)}
+                                              defaultValue={it.price || ""}
+                                              onChange={e => {
+                                                const val = parseFloat(e.target.value) || 0;
+                                                setOrders(prev => prev.map(o => {
+                                                  if (o.id !== order.id) return o;
+                                                  const items = o.items.map(x => x.id === it.id ? { ...x, price: val } : x);
+                                                  const total = items.reduce((s, x) => s + (x.id === "SAM-817" ? x.price : x.price * x.qty), 0);
+                                                  return { ...o, items, total };
+                                                }));
+                                              }}
+                                              onClick={e => e.stopPropagation()}
+                                              style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#FFF9EE", padding: "3px 6px", width: 90, outline: "none", color: "#0A0A0A" }}
+                                            />
+                                          </div>
+                                        ) : fmt(it.price)}
+                                      </td>
+                                      <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 600, textAlign: "right" }}>
+                                        {isSample ? (it.price > 0 ? fmt(it.price) : <span style={{ color: "#AAA", fontSize: 10, letterSpacing: "0.1em" }}>TBD</span>) : fmt(it.price * it.qty)}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -670,7 +677,23 @@ function AdminView() {
                         )}
                         <div className="dftr">
                           <div className="dttl">Order Total: {fmt(order.total)}</div>
-                          <button className="delbtn" onClick={() => del(order.id)}>Delete Request</button>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            {order.requestType === "Quote Request" && order.status !== "Cancelled" && order.status !== "Completed" && (
+                              <button
+                                onClick={async e => {
+                                  e.stopPropagation();
+                                  const updated = orders.map(o => o.id === order.id ? { ...o, status: "Quote Sent" } : o);
+                                  setOrders(updated);
+                                  await saveOrders(updated);
+                                  const final = updated.find(o => o.id === order.id);
+                                  fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) }).catch(() => {});
+                                }}
+                                style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", background: "#0A0A0A", color: "#fff", border: "none", padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>
+                                Confirm &amp; Send Quote →
+                              </button>
+                            )}
+                            <button className="delbtn" onClick={() => del(order.id)}>Delete Request</button>
+                          </div>
                         </div>
                       </td>
                     </tr>
