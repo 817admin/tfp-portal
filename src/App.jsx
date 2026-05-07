@@ -456,8 +456,8 @@ function ClientHistory() {
                             <div className="nblk">{order.notes}</div>
                           </div>
                         )}
-                        {(order.approvalDate || order.leadTime) && (
-                          <div style={{ marginTop: 16, background: "#0A0A0A", padding: "16px 20px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+                        {(order.approvalDate || order.leadTime || order.poId) && (
+                          <div style={{ marginTop: 16, background: "#0A0A0A", padding: "16px 20px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
                             {order.approvalDate && (
                               <div>
                                 <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>Approval Date</div>
@@ -470,6 +470,12 @@ function ClientHistory() {
                               <div>
                                 <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>Estimated Lead Time</div>
                                 <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>{order.leadTime}</div>
+                              </div>
+                            )}
+                            {order.poId && (
+                              <div>
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>817 PO ID</div>
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>{order.poId}</div>
                               </div>
                             )}
                           </div>
@@ -652,7 +658,7 @@ function AdminView() {
                           </div>
                         </div>
                         {["Quote Sent", "In Production", "Completed"].includes(order.status) && (
-                          <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+                          <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
                             <div>
                               <div className="dslbl" style={{ marginBottom: 10 }}>Approval Date</div>
                               <input
@@ -670,6 +676,17 @@ function AdminView() {
                                 placeholder="e.g. 10–12 weeks"
                                 defaultValue={order.leadTime || ""}
                                 onBlur={e => updProjectInfo(order.id, "leadTime", e.target.value)}
+                                onClick={e => e.stopPropagation()}
+                                style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: "100%", letterSpacing: "0.04em" }}
+                              />
+                            </div>
+                            <div>
+                              <div className="dslbl" style={{ marginBottom: 10 }}>817 PO ID</div>
+                              <input
+                                type="text"
+                                placeholder="e.g. 817-2026-001"
+                                defaultValue={order.poId || ""}
+                                onBlur={e => updProjectInfo(order.id, "poId", e.target.value)}
                                 onClick={e => e.stopPropagation()}
                                 style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: "100%", letterSpacing: "0.04em" }}
                               />
