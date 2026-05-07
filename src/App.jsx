@@ -18,6 +18,7 @@ const CATALOG = [
 ];
 
 const ADMIN_PASSWORD = "eddysilverlake817";
+const CLIENT_PASSWORD = "TFPAthena817";
 const STATUSES = ["Requested", "Quote Sent", "In Production", "Completed", "Cancelled"];
 const STATUS_STYLE = {
   "Requested":     { color: "#7A5500", bg: "#FFF8E6", border: "#C8A000" },
@@ -711,6 +712,33 @@ function AdminView() {
   );
 }
 
+function PortalLogin({ onLogin }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState(false);
+  const go = () => {
+    if (pw === ADMIN_PASSWORD) { onLogin(true); }
+    else if (pw === CLIENT_PASSWORD) { onLogin(false); }
+    else { setErr(true); setPw(""); }
+  };
+  return (
+    <div className="lgwrap">
+      <div className="lgbox">
+        <div className="lgtitle">817 Hospitality</div>
+        <div className="lgsub">Trade Portal</div>
+        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "#888", marginBottom: 20, lineHeight: 1.6 }}>
+          Restricted access — authorized clients only.
+        </div>
+        <input className={"lgi" + (err ? " err" : "")} type="password" value={pw}
+          placeholder="Enter access code" autoFocus
+          onChange={e => { setPw(e.target.value); setErr(false); }}
+          onKeyDown={e => e.key === "Enter" && go()} />
+        <button className="lgbtn" onClick={go}>Enter →</button>
+        {err && <div className="lgerr">Incorrect access code</div>}
+      </div>
+    </div>
+  );
+}
+
 function AdminLogin({ onLogin }) {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState(false);
@@ -732,10 +760,19 @@ function AdminLogin({ onLogin }) {
 export default function App() {
   const [view, setView] = useState("client");
   const [authed, setAuthed] = useState(false);
+  const [portalAccess, setPortalAccess] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [count, setCount] = useState(0);
   const [tick, setTick] = useState(0);
 
   useEffect(() => { loadOrders().then(o => setCount(o.length)); }, [tick]);
+
+  if (!portalAccess) return (
+    <div className="app">
+      <style>{G}</style>
+      <PortalLogin onLogin={(admin) => { setPortalAccess(true); setIsAdmin(admin); if (admin) setView("admin"); }} />
+    </div>
+  );
 
   return (
     <div className="app">
@@ -746,11 +783,12 @@ export default function App() {
           <div className="wm-sub">× The Future Perfect — Trade Portal</div>
         </div>
         <div className="nav">
-          <button className={"nb" + (view === "client" ? " on" : "")} onClick={() => setView("client")}>New Request</button>
-          <button className={"nb" + (view === "history" ? " on" : "")} onClick={() => setView("history")}>Order History</button>
-          <button className={"nb" + (view === "admin" ? " on" : "")} onClick={() => setView("admin")}>
+          {!isAdmin && <button className={"nb" + (view === "client" ? " on" : "")} onClick={() => setView("client")}>New Request</button>}
+          {!isAdmin && <button className={"nb" + (view === "history" ? " on" : "")} onClick={() => setView("history")}>Order History</button>}
+          {isAdmin && <button className={"nb" + (view === "admin" ? " on" : "")} onClick={() => setView("admin")}>
             Admin{count > 0 && <span className="nbadge">{count}</span>}
-          </button>
+          </button>}
+          {isAdmin && <button className={"nb" + (view === "client" ? " on" : "")} onClick={() => setView("client")}>Client View</button>}
         </div>
       </div>
       {(view === "client" || view === "history") && (
@@ -762,7 +800,7 @@ export default function App() {
       )}
       {view === "client" && <ClientView onSubmitted={() => setTick(t => t+1)} />}
       {view === "history" && <ClientHistory key={tick} />}
-      {view === "admin" && (authed ? <AdminView key={tick} /> : <AdminLogin onLogin={() => setAuthed(true)} />)}
+      {view === "admin" && (isAdmin ? <AdminView key={tick} /> : <AdminLogin onLogin={() => { setIsAdmin(true); setView("admin"); }} />)}
     </div>
   );
 }
