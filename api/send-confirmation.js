@@ -1,8 +1,8 @@
 // api/send-confirmation.js
 // Vercel serverless function — runs on the server, never exposed to the client
 
-const ADMIN_EMAIL = "julian@817hospitality.com";
-const CLIENT_EMAIL = "julianlopezbirlain@gmail.com"; // Replace with TFP's email when ready
+const ADMIN_EMAILS = ["julian@817hospitality.com", "eddy@817hospitality.com"];
+const CLIENT_EMAILS = ["jp@thefutureperfect.com", "purchasing@thefutureperfect.com", "julianlopezbirlain@gmail.com"];
 const FROM_EMAIL = "julian@817hospitality.com";
 
 const fmt = (n) =>
@@ -206,7 +206,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         from: FROM_EMAIL,
-        to: ADMIN_EMAIL,
+        to: ADMIN_EMAILS,
         subject: `[817 Portal] New ${typeLabel} — ${order.id}`,
         html: buildEmailHtml({ order, isAdmin: true }),
       }),
@@ -226,7 +226,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         from: FROM_EMAIL,
-        to: CLIENT_EMAIL,
+        to: CLIENT_EMAILS,
         subject: `Your ${typeLabel} has been received — ${order.id}`,
         html: buildEmailHtml({ order, isAdmin: false }),
       }),

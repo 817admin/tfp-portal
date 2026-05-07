@@ -1,4 +1,4 @@
-const CLIENT_EMAIL = "julianlopezbirlain@gmail.com";
+const CLIENT_EMAILS = ["jp@thefutureperfect.com", "purchasing@thefutureperfect.com", "julianlopezbirlain@gmail.com"];
 const FROM_EMAIL = "julian@817hospitality.com";
 const fmt = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:0}).format(n);
 const fmtDate = d => new Date(d).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});

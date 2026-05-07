@@ -701,13 +701,11 @@ function AdminView() {
                                 onClick={async e => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  console.log("Confirm button clicked", order.id);
                                   const updated = orders.map(o => o.id === order.id ? { ...o, status: "Quote Sent" } : o);
                                   setOrders(updated);
                                   await saveOrders(updated);
                                   const final = updated.find(o => o.id === order.id);
                                   fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) }).catch(() => {});
-                                  alert("Quote sent! Email dispatched to client.");
                                 }}
                                 style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", background: "#0A0A0A", color: "#fff", border: "none", padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>
                                 Confirm &amp; Send Quote →
