@@ -196,6 +196,7 @@ function ClientView({ onSubmitted }) {
   const [lastId, setLastId] = useState("");
   const [sample, setSample] = useState({ inCart: false, dimensions: "", description: "" });
   const [pricingAcked, setPricingAcked] = useState(false);
+  const [category, setCategory] = useState("Gallery");
 
   const cats = ["All", "Tables", "Seating", "Case Goods"];
   const list = CATALOG.filter(i =>
@@ -218,7 +219,7 @@ function ClientView({ onSubmitted }) {
     const id = genId(rtype);
     const items = cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, modifications: i.modifications }));
     if (sample.inCart) items.push({ id: "SAM-817", name: "Material Samples", qty: 1, price: 0, modifications: "", sampleDimensions: sample.dimensions, sampleDescription: sample.description });
-    const order = { id, requestType: rtype, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes };
+    const order = { id, requestType: rtype, category, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes };
     await saveOrders([order, ...orders]);
     // Send confirmation emails — fire and forget, don't block the UI
     fetch("/api/send-confirmation", {
@@ -226,7 +227,7 @@ function ClientView({ onSubmitted }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order }),
     }).catch(err => console.error("Email send failed:", err));
-    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); onSubmitted();
+    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); setCategory("Gallery"); onSubmitted();
   };
 
   if (done) return (
@@ -355,6 +356,14 @@ function ClientView({ onSubmitted }) {
                 </button>
               ))}
             </div>
+            <div style={{ marginBottom: 14 }}>
+              <label className="fl" style={{ marginBottom: 6 }}>Order Category</label>
+              <div className="ttog">
+                {["Gallery", "Retail"].map(c => (
+                  <button key={c} className={"tbtn" + (category === c ? " on" : "")} onClick={() => setCategory(c)}>{c}</button>
+                ))}
+              </div>
+            </div>
             <textarea className="nta" rows={2} placeholder="Timeline, project notes..." value={notes} onChange={e => setNotes(e.target.value)} />
             {rtype === "Quote Request" && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14, padding: "12px 14px", background: "#F5F4F1", border: "1px solid #DDDAD3" }}>
@@ -406,7 +415,10 @@ function ClientHistory() {
               <>
                 <tr key={order.id} className={"orow" + (isOpen ? " ex" : "")} onClick={() => setExp(isOpen ? null : order.id)}>
                   <td className="oid">{order.id}</td>
-                  <td><span className={"tpill " + (effectiveType(order) === "Purchase Order" ? "po" : "qr")}>{effectiveType(order) === "Purchase Order" ? "PO" : "Quote"}</span></td>
+                  <td>
+                    <span className={"tpill " + (effectiveType(order) === "Purchase Order" ? "po" : "qr")}>{effectiveType(order) === "Purchase Order" ? "PO" : "Quote"}</span>
+                    {order.category && <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.14em", textTransform: "uppercase", color: "#888", marginLeft: 6 }}>{order.category}</span>}
+                  </td>
                   <td className="icell">{order.items.map(i => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ""}`).join(", ")}</td>
                   <td className="dcell">{fmtDate(order.date)}</td>
                   <td className="acell">
@@ -497,6 +509,7 @@ function AdminView() {
   const [orders, setOrders] = useState([]);
   const [sf, setSf] = useState("All");
   const [tf, setTf] = useState("All");
+  const [cf, setCf] = useState("All Categories");
   const [exp, setExp] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -535,7 +548,8 @@ function AdminView() {
 
   const list = orders.filter(o =>
     (sf === "All" || o.status === sf) &&
-    (tf === "All" || (tf === "QR" ? effectiveType(o) === "Quote Request" : effectiveType(o) === "Purchase Order"))
+    (tf === "All" || (tf === "QR" ? effectiveType(o) === "Quote Request" : effectiveType(o) === "Purchase Order")) &&
+    (cf === "All Categories" || o.category === cf)
   );
   const tv = list.reduce((s, o) => s + o.total, 0);
   const pend = orders.filter(o => o.status === "Requested").length;
@@ -554,6 +568,8 @@ function AdminView() {
         {["All", "QR", "PO"].map(t => <button key={t} className={"fb" + (tf === t ? " on" : "")} onClick={() => setTf(t)}>{t === "All" ? "All Types" : t === "QR" ? "Quotes" : "Purchase Orders"}</button>)}
         <div style={{ width: 1, height: 18, background: "#D8D5CE", margin: "0 4px" }} />
         {["All", ...STATUSES].map(s => <button key={s} className={"fb" + (sf === s ? " on" : "")} onClick={() => setSf(s)}>{s}</button>)}
+        <div style={{ width: 1, height: 18, background: "#D8D5CE", margin: "0 4px" }} />
+        {["All Categories", "Gallery", "Retail"].map(c => <button key={c} className={"fb" + (cf === c ? " on" : "")} onClick={() => setCf(c)}>{c}</button>)}
         <button className="rfbtn" onClick={refresh}>↻ Refresh</button>
       </div>
       {list.length === 0 ? <div className="noord">No requests match current filters</div> : (
@@ -656,6 +672,20 @@ function AdminView() {
                               <div style={{ color: "#CCC", fontSize: 11, fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>No modifications requested</div>
                             )}
                           </div>
+                        </div>
+                        <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+                          <div>
+                            <div className="dslbl" style={{ marginBottom: 10 }}>Order Category</div>
+                            <div style={{ display: "flex", gap: 0, border: "1.5px solid #0A0A0A" }}>
+                              {["Gallery", "Retail"].map(c => (
+                                <button key={c} onClick={async e => { e.stopPropagation(); await updProjectInfo(order.id, "category", c); }}
+                                  style={{ flex: 1, fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", background: order.category === c ? "#0A0A0A" : "#fff", color: order.category === c ? "#fff" : "#888", border: "none", borderRight: c === "Gallery" ? "1px solid #0A0A0A" : "none", padding: "9px 0", cursor: "pointer", fontWeight: 700 }}>
+                                  {c}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 0 }} />
                         </div>
                         {["Quote Sent", "In Production", "Completed"].includes(order.status) && (
                           <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
