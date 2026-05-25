@@ -731,11 +731,18 @@ function AdminView() {
                                 onClick={async e => {
                                   e.stopPropagation();
                                   e.preventDefault();
+                                  // Get the current order from state (includes any edited prices)
+                                  const current = orders.find(o => o.id === order.id);
                                   const updated = orders.map(o => o.id === order.id ? { ...o, status: "Quote Sent" } : o);
                                   setOrders(updated);
                                   await saveOrders(updated);
                                   const final = updated.find(o => o.id === order.id);
-                                  fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) }).catch(() => {});
+                                  const emailRes = await fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) });
+                                  if (emailRes.ok) {
+                                    alert("Quote confirmed and email sent to The Future Perfect.");
+                                  } else {
+                                    alert("Quote saved but email failed. Check Vercel logs.");
+                                  }
                                 }}
                                 style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", background: "#0A0A0A", color: "#fff", border: "none", padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>
                                 Confirm &amp; Send Quote →
