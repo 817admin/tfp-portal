@@ -16,7 +16,7 @@ export default async function handler(req,res){
   if(!KEY)return res.status(500).json({error:"Missing key"});
   const ref=`<${order.id}@817hospitality.com>`;
   try{
-    const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:`Bearer ${KEY}`,"Content-Type":"application/json"},body:JSON.stringify({from:FROM_EMAIL,to:CLIENT_EMAIL,subject:`Re: Your Quote Request — ${order.id}`,html:buildHtml(order),headers:{"In-Reply-To":ref,"References":ref}})});
+    const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:`Bearer ${KEY}`,"Content-Type":"application/json"},body:JSON.stringify({from:FROM_EMAIL,to: CLIENT_EMAILS,subject:`Re: Your Quote Request — ${order.id}`,html:buildHtml(order),headers:{"In-Reply-To":ref,"References":ref}})});
     if(!r.ok)throw new Error(JSON.stringify(await r.json()));
     return res.status(200).json({success:true});
   }catch(e){console.error(e);return res.status(500).json({error:e.message});}
