@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { matchOrderItems } from "./vendorPOMatcher";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -505,6 +506,64 @@ function ClientHistory() {
   );
 }
 
+function VendorPOSubCard({ title, vendor, results }) {
+  const ok = results.filter(r => r.status === "OK");
+  const review = results.filter(r => r.status === "REQUIRES_REVIEW");
+  return (
+    <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
+      <div className="dslbl" style={{ marginBottom: 12 }}>{title} — {vendor}</div>
+      {ok.length > 0 && (
+        <table className="ltbl" style={{ marginBottom: review.length ? 14 : 0 }}>
+          <thead><tr><th>SKU</th><th>Piece</th><th>Qty</th><th>Box Dim</th></tr></thead>
+          <tbody>
+            {ok.flatMap((r, ri) => r.lines.map((l, li) => (
+              <tr key={`${ri}-${li}`}>
+                <td className="lid">{l.sku}</td>
+                <td style={{ textTransform: "uppercase", fontSize: 11 }}>{l.pieceName}</td>
+                <td>{l.quantity}{l.piecesInBox ? ` (${l.piecesInBox}/box)` : ""}</td>
+                <td style={{ fontSize: 10, color: "#999" }}>{l.boxDim || "—"}</td>
+              </tr>
+            )))}
+          </tbody>
+        </table>
+      )}
+      {review.map((r, i) => (
+        <div key={i} style={{ border: "1px solid #C8A000", background: "#FFF8E6", padding: "10px 12px", marginBottom: 8 }}>
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "#7A5500", fontWeight: 700, marginBottom: 4 }}>
+            Requires Review — {r.sku} ×{r.qty}
+          </div>
+          <div style={{ fontSize: 11, color: "#7A5500" }}>{r.reason}</div>
+        </div>
+      ))}
+      {ok.length === 0 && review.length === 0 && (
+        <div style={{ color: "#CCC", fontSize: 11, fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          No pieces on this order
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VendorPOPanel({ order }) {
+  if (order.status !== "In Production") return null;
+  const { crates, covers } = matchOrderItems(order.items);
+  return (
+    <div style={{ background: "#F5F4F1", borderTop: "1px solid #DDDAD3", padding: "18px 32px" }}>
+      <div className="dslbl" style={{ marginBottom: 14 }}>Vendor POs</div>
+      {!order.poId ? (
+        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#AAA", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          Set the 817 PO ID first.
+        </div>
+      ) : (
+        <>
+          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} />
+          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} />
+        </>
+      )}
+    </div>
+  );
+}
+
 function AdminView() {
   const [orders, setOrders] = useState([]);
   const [sf, setSf] = useState("All");
@@ -723,6 +782,7 @@ function AdminView() {
                             </div>
                           </div>
                         )}
+                        <VendorPOPanel order={order} />
                         <div className="dftr">
                           <div className="dttl">Order Total: {fmt(order.total)}</div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
