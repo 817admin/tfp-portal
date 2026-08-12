@@ -506,24 +506,45 @@ function ClientHistory() {
   );
 }
 
-function VendorPOSubCard({ title, vendor, results }) {
+function VendorPOSubCard({ title, vendor, results, showBoxDim }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
+  const cols = showBoxDim ? 4 : 3;
   return (
     <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
       <div className="dslbl" style={{ marginBottom: 12 }}>{title} — {vendor}</div>
       {ok.length > 0 && (
         <table className="ltbl" style={{ marginBottom: review.length ? 14 : 0 }}>
-          <thead><tr><th>SKU</th><th>Piece</th><th>Qty</th><th>Box Dim</th></tr></thead>
+          <thead><tr><th>SKU</th><th>Piece</th><th>Qty</th>{showBoxDim && <th>Box Dim</th>}</tr></thead>
           <tbody>
-            {ok.flatMap((r, ri) => r.lines.map((l, li) => (
-              <tr key={`${ri}-${li}`}>
-                <td className="lid">{l.sku}</td>
-                <td style={{ textTransform: "uppercase", fontSize: 11 }}>{l.pieceName}</td>
-                <td>{l.quantity}{l.piecesInBox ? ` (${l.piecesInBox}/box)` : ""}</td>
-                <td style={{ fontSize: 10, color: "#999" }}>{l.boxDim || "—"}</td>
-              </tr>
-            )))}
+            {ok.flatMap((r, ri) => {
+              const rows = r.lines.map((l, li) => (
+                <tr key={`${ri}-${li}`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
+                  <td className="lid">{l.sku}</td>
+                  <td style={{ textTransform: "uppercase", fontSize: 11 }}>{l.pieceName}</td>
+                  <td>{l.quantity}{l.piecesInBox ? ` (${l.piecesInBox}/box)` : ""}</td>
+                  {showBoxDim && <td style={{ fontSize: 10, color: "#999" }}>{l.boxDim || "—"}</td>}
+                </tr>
+              ));
+              if (r.dimFlag) {
+                rows.push(
+                  <tr key={`${ri}-dim`}>
+                    <td colSpan={cols} style={{ background: "#FFF8E6", fontSize: 10, color: "#7A5500", letterSpacing: "0.04em", fontWeight: 600 }}>
+                      ⚠ Verify crate size — modification may affect dimensions: {r.note}
+                    </td>
+                  </tr>
+                );
+              } else if (r.note) {
+                rows.push(
+                  <tr key={`${ri}-note`}>
+                    <td colSpan={cols} style={{ fontSize: 10, color: "#AAA", letterSpacing: "0.04em" }}>
+                      Finish: {r.note}
+                    </td>
+                  </tr>
+                );
+              }
+              return rows;
+            })}
           </tbody>
         </table>
       )}
@@ -556,8 +577,8 @@ function VendorPOPanel({ order }) {
         </div>
       ) : (
         <>
-          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} />
-          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} />
+          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} showBoxDim={true} />
+          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} showBoxDim={false} />
         </>
       )}
     </div>

@@ -1,15 +1,18 @@
 // vendorPOMatcher.js
-// Turns an order's line items into crate PO lines (Empaques Fuertes) and
-// cover PO lines (Duco). Pure functions — no side effects, safe to reuse
-// anywhere. Verified against 9 edge cases in vendor-po-dev/test-matcher.js
-// before being wired into the app.
-//
-// Reads directly from the app's order.items shape:
-//   { id: "TB-001", name: "Pointue Side Table", qty: 5, modifications: "" }
-// SAM-817 (Material Samples) is filtered out by the caller before matching —
-// it isn't a real catalog piece.
-
 import { CRATE_CATALOG, SKU_NAMES } from "./vendorPOCatalog";
+
+export function modificationAffectsDimensions(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  if (/\b(same|standard|stock|unchanged|no change|as before|as previous)\s+(size|sized|dimension|dimensions|measurement|measurements)\b/.test(t)) {
+    return false;
+  }
+  const dimWords = /\b(dimension|dimensions|size|sized|sizing|resize|resized|oversized|oversize|undersized|taller|shorter|wider|narrower|deeper|shallower|longer|bigger|larger|smaller|enlarge|enlarged|shrink|shrunk|extend|extended|extension|widen|widened|heighten|custom size|custom dimension|medida|medidas|tama[nñ]o|altura|ancho|largo|profundidad)\b/;
+  if (dimWords.test(t)) return true;
+  const measure = /\d+(\.\d+)?\s?(cm|mm|in|inch|inches|"|'|ft|foot|feet)\b/;
+  if (measure.test(t)) return true;
+  return false;
+}
 
 function greedyPack(configs, qty) {
   const sorted = [...configs].sort((a, b) => b.pieces - a.pieces);
@@ -17,9 +20,7 @@ function greedyPack(configs, qty) {
   const lines = [];
   while (remaining > 0) {
     const fit = sorted.find((c) => c.pieces <= remaining);
-    if (!fit) {
-      return { success: false, packed: lines, remaining };
-    }
+    if (!fit) return { success: false, packed: lines, remaining };
     lines.push(fit);
     remaining -= fit.pieces;
   }
@@ -30,31 +31,12 @@ export function matchItemToCrates(item) {
   const sku = item.id;
   const qty = item.qty;
   const pieceName = item.name || SKU_NAMES[sku] || sku;
-  const modifications = item.modifications;
-
-  if (modifications && modifications.trim().length > 0) {
-    const configs = CRATE_CATALOG[sku];
-    return {
-      status: "REQUIRES_REVIEW",
-      reason: "custom dimensions",
-      sku,
-      pieceName,
-      qty,
-      modifications,
-      suggestion: configs ? configs[0] : null,
-    };
-  }
+  const note = item.modifications && item.modifications.trim() ? item.modifications.trim() : null;
+  const dimFlag = modificationAffectsDimensions(note);
 
   const configs = CRATE_CATALOG[sku];
   if (!configs) {
-    return {
-      status: "REQUIRES_REVIEW",
-      reason: "no catalog entry for this SKU",
-      sku,
-      pieceName,
-      qty,
-      suggestion: null,
-    };
+    return { status: "REQUIRES_REVIEW", reason: "no catalog entry for this SKU", sku, pieceName, qty, note };
   }
 
   if (configs[0].structural) {
@@ -67,20 +49,18 @@ export function matchItemToCrates(item) {
       quantity: qty,
       cost: component.cost,
     }));
-    return { status: "OK", sku, pieceName, qty, lines };
+    return { status: "OK", sku, pieceName, qty, lines, note, dimFlag };
   }
 
   const pack = greedyPack(configs, qty);
   if (!pack.success) {
     return {
       status: "REQUIRES_REVIEW",
-      reason: `cannot pack qty=${qty} into available configs [${configs
-        .map((c) => c.pieces)
-        .join(", ")}]`,
+      reason: `cannot pack qty=${qty} into available configs [${configs.map((c) => c.pieces).join(", ")}]`,
       sku,
       pieceName,
       qty,
-      suggestion: configs[configs.length - 1],
+      note,
     };
   }
 
@@ -93,21 +73,18 @@ export function matchItemToCrates(item) {
     piecesInBox: config.pieces,
     cost: config.cost,
   }));
-  return { status: "OK", sku, pieceName, qty, lines };
+  return { status: "OK", sku, pieceName, qty, lines, note, dimFlag };
 }
 
 export function matchItemToCovers(item) {
   const sku = item.id;
   const qty = item.qty;
   const pieceName = item.name || SKU_NAMES[sku] || sku;
-  const modifications = item.modifications;
-
-  if (modifications && modifications.trim().length > 0) {
-    return { status: "REQUIRES_REVIEW", reason: "custom dimensions", sku, pieceName, qty, modifications };
-  }
+  const note = item.modifications && item.modifications.trim() ? item.modifications.trim() : null;
+  const dimFlag = modificationAffectsDimensions(note);
 
   if (!CRATE_CATALOG[sku] && !SKU_NAMES[sku]) {
-    return { status: "REQUIRES_REVIEW", reason: "no catalog entry for this SKU", sku, pieceName, qty };
+    return { status: "REQUIRES_REVIEW", reason: "no catalog entry for this SKU", sku, pieceName, qty, note };
   }
 
   return {
@@ -116,13 +93,11 @@ export function matchItemToCovers(item) {
     pieceName,
     qty,
     lines: [{ sku, pieceName, quantity: qty, cost: null }],
+    note,
+    dimFlag,
   };
 }
 
-/**
- * Runs an order's real items (as stored in Upstash) through both matchers.
- * Filters out SAM-817 (Material Samples) — not a real catalog piece.
- */
 export function matchOrderItems(items) {
   const realPieces = (items || []).filter((it) => it.id !== "SAM-817");
   return {
