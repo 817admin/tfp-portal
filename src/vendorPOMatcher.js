@@ -105,3 +105,31 @@ export function matchOrderItems(items) {
     covers: realPieces.map(matchItemToCovers),
   };
 }
+
+export function crateDisplayRows(result) {
+  const lines = result.lines || [];
+  if (!lines.length) return [];
+  if (lines[0].piecesInBox === undefined) {
+    return lines.map((l) => ({
+      pieceName: l.pieceName,
+      pieceQty: result.qty,
+      crateQty: l.quantity,
+      piecesInBox: null,
+      boxDim: l.boxDim,
+    }));
+  }
+  const groups = new Map();
+  for (const l of lines) {
+    const key = `${l.piecesInBox}|${l.boxDim}`;
+    const g = groups.get(key) || { pieceName: l.pieceName, piecesInBox: l.piecesInBox, boxDim: l.boxDim, crateQty: 0 };
+    g.crateQty += 1;
+    groups.set(key, g);
+  }
+  return [...groups.values()].map((g) => ({
+    pieceName: g.pieceName,
+    pieceQty: g.piecesInBox * g.crateQty,
+    crateQty: g.crateQty,
+    piecesInBox: g.piecesInBox,
+    boxDim: g.boxDim,
+  }));
+}

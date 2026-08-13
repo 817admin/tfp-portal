@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { matchOrderItems } from "./vendorPOMatcher";
+import { matchOrderItems, crateDisplayRows } from "./vendorPOMatcher";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -506,26 +506,44 @@ function ClientHistory() {
   );
 }
 
-function VendorPOSubCard({ title, vendor, results, showBoxDim }) {
+function VendorPOSubCard({ title, vendor, results, mode }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
-  const cols = showBoxDim ? 4 : 3;
+  const isCrates = mode === "crates";
+  const cols = isCrates ? 5 : 3;
   return (
     <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
       <div className="dslbl" style={{ marginBottom: 12 }}>{title} — {vendor}</div>
       {ok.length > 0 && (
         <table className="ltbl" style={{ marginBottom: review.length ? 14 : 0 }}>
-          <thead><tr><th>SKU</th><th>Piece</th><th>Qty</th>{showBoxDim && <th>Box Dim</th>}</tr></thead>
+          <thead>
+            <tr>
+              <th>SKU</th><th>Piece</th>
+              {isCrates ? (<><th>Piece Qty</th><th>Crate Qty</th><th>Box Dim</th></>) : (<th>Qty</th>)}
+            </tr>
+          </thead>
           <tbody>
             {ok.flatMap((r, ri) => {
-              const rows = r.lines.map((l, li) => (
-                <tr key={`${ri}-${li}`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
-                  <td className="lid">{l.sku}</td>
-                  <td style={{ textTransform: "uppercase", fontSize: 11 }}>{l.pieceName}</td>
-                  <td>{l.quantity}{l.piecesInBox ? ` (${l.piecesInBox}/box)` : ""}</td>
-                  {showBoxDim && <td style={{ fontSize: 10, color: "#999" }}>{l.boxDim || "—"}</td>}
-                </tr>
-              ));
+              let rows;
+              if (isCrates) {
+                rows = crateDisplayRows(r).map((row, li) => (
+                  <tr key={`${ri}-${li}`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
+                    <td className="lid">{r.sku}</td>
+                    <td style={{ textTransform: "uppercase", fontSize: 11 }}>{row.pieceName}</td>
+                    <td>{row.pieceQty}</td>
+                    <td>{row.crateQty}{row.piecesInBox ? ` (${row.piecesInBox}/box)` : ""}</td>
+                    <td style={{ fontSize: 10, color: "#999" }}>{row.boxDim || "—"}</td>
+                  </tr>
+                ));
+              } else {
+                rows = [(
+                  <tr key={`${ri}-0`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
+                    <td className="lid">{r.sku}</td>
+                    <td style={{ textTransform: "uppercase", fontSize: 11 }}>{r.pieceName}</td>
+                    <td>{r.qty}</td>
+                  </tr>
+                )];
+              }
               if (r.dimFlag) {
                 rows.push(
                   <tr key={`${ri}-dim`}>
@@ -577,8 +595,8 @@ function VendorPOPanel({ order }) {
         </div>
       ) : (
         <>
-          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} showBoxDim={true} />
-          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} showBoxDim={false} />
+          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} mode="crates" />
+          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} mode="covers" />
         </>
       )}
     </div>
