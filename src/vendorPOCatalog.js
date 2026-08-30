@@ -85,3 +85,13 @@ export const CRATE_CATALOG = {
     },
   ],
 };
+
+// Vendor + delivery constants. Emails are still placeholders per the original
+// brief — update these two lines once Julian has real vendor addresses.
+export const VENDOR_INFO = {
+  crates: { name: "Empaques Fuertes", email: "info@817hospitality.com", isPlaceholder: true },
+  covers: { name: "Duco", email: "info@817hospitality.com", isPlaceholder: true },
+};
+
+export const DELIVERY_ADDRESS = "16 de Septiembre 33, La Cruz Coyuya, Iztacalco, 08310 Ciudad de México, CDMX";
+export const PAYMENT_TERMS = "50% anticipo, 50% contra entrega";

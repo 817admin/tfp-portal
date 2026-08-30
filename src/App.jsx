@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, nextStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
+import { buildPOLineItems, buildPOHtml, buildPOPlainText, buildMailtoUrl } from "./vendorPODocument";
+import { VENDOR_INFO } from "./vendorPOCatalog";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -584,6 +586,84 @@ function StatusPill({ status }) {
   );
 }
 
+async function copyHtmlToClipboard(html, plainText) {
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      const item = new window.ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+  } catch (e) { /* fall through to plain-text copy */ }
+  try {
+    await navigator.clipboard.writeText(plainText);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function PODocumentActions({ mode, poNumber, results, overrides, customLines, totals }) {
+  const [status, setStatus] = useState("");
+  const vendor = VENDOR_INFO[mode];
+  const { items: lineItems, unresolved } = buildPOLineItems(results, mode, overrides, customLines);
+  const html = buildPOHtml({ mode, poNumber, items: lineItems, subtotal: totals.subtotal, iva: totals.iva, total: totals.total });
+  const plainText = buildPOPlainText({ mode, poNumber, items: lineItems, subtotal: totals.subtotal, iva: totals.iva, total: totals.total });
+
+  const handlePreview = () => {
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${poNumber || "PO"}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  const handleSend = async () => {
+    const copied = await copyHtmlToClipboard(html, plainText);
+    setStatus(copied ? "Copied to clipboard \u2713 opening Gmail\u2026" : "Opening Gmail\u2026");
+    const mailto = buildMailtoUrl({ mode, poNumber, plainTextBody: plainText });
+    window.location.href = mailto;
+    setTimeout(() => setStatus(""), 4000);
+  };
+
+  const btnStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "7px 12px", border: "1px solid #0A0A0A", cursor: "pointer", background: "#fff", color: "#0A0A0A" };
+  const primaryBtnStyle = { ...btnStyle, background: "#0A0A0A", color: "#fff", border: "none" };
+
+  return (
+    <div style={{ borderTop: "1px solid #DDDAD3", marginTop: 10, paddingTop: 10 }}>
+      {unresolved.length > 0 && (
+        <div style={{ fontSize: 10, color: "#C8A000", fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.04em", marginBottom: 8 }}>
+          \u26a0 {unresolved.length} item(s) excluded from this PO \u2014 still need a custom crate line: {unresolved.map(u => u.sku).join(", ")}
+        </div>
+      )}
+      {vendor.isPlaceholder && (
+        <div style={{ fontSize: 10, color: "#C8A000", fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.04em", marginBottom: 8 }}>
+          \u26a0 Sending to placeholder vendor email ({vendor.email}) \u2014 not {vendor.name}'s real address yet.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={handlePreview} style={btnStyle}>Preview</button>
+        <button onClick={handleDownload} style={btnStyle}>Download</button>
+        <button onClick={handleSend} style={primaryBtnStyle}>Send via Gmail</button>
+        {status && <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono',monospace" }}>{status}</span>}
+      </div>
+    </div>
+  );
+}
+
 function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency, poId, poState, onAdvance, onToggleLock }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
@@ -737,6 +817,9 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
         </div>
       )}
       {(ok.length > 0 || (customLines && customLines.length > 0)) && <VendorPOTotals totals={totals} currency="MXN" />}
+      {(ok.length > 0 || (customLines && customLines.length > 0)) && (
+        <PODocumentActions mode={mode} poNumber={displayPoNumber} results={results} overrides={overrides} customLines={customLines} totals={totals} />
+      )}
     </div>
   );
 }
