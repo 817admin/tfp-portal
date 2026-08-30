@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { matchOrderItems, crateDisplayRows } from "./vendorPOMatcher";
+import { matchOrderItems, crateDisplayRows, calcPOTotals } from "./vendorPOMatcher";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -506,41 +506,121 @@ function ClientHistory() {
   );
 }
 
-function VendorPOSubCard({ title, vendor, results, mode }) {
+function CostField({ value, isOverridden, onCommit, placeholder }) {
+  const str = (v) => (v === null || v === undefined ? "" : String(v));
+  const [local, setLocal] = useState(str(value));
+  useEffect(() => { setLocal(str(value)); }, [value]);
+  return (
+    <input
+      type="number"
+      value={local}
+      placeholder={placeholder || "0"}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => { if (local !== str(value)) onCommit(local); }}
+      style={{
+        width: 88, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11,
+        padding: "4px 6px", border: "1px solid #DDDAD3",
+        background: isOverridden ? "#FFFDE0" : "#fff",
+      }}
+    />
+  );
+}
+
+function fmtMoney(n) {
+  return "$" + (Math.round((n || 0) * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function VendorPOTotals({ totals, currency }) {
+  const { subtotal, iva, total, missingCost, unresolvedCount } = totals;
+  return (
+    <div style={{ borderTop: "1px solid #DDDAD3", marginTop: 10, paddingTop: 10, fontSize: 11, fontFamily: "'IBM Plex Mono',monospace" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}><span>SUBTOTAL</span><span>{fmtMoney(subtotal)} {currency}</span></div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, color: "#999" }}><span>IVA (16%)</span><span>{fmtMoney(iva)} {currency}</span></div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}><span>TOTAL</span><span>{fmtMoney(total)} {currency}</span></div>
+      {(missingCost > 0 || unresolvedCount > 0) && (
+        <div style={{ marginTop: 8, fontSize: 10, color: "#C8A000", letterSpacing: "0.04em" }}>
+          {unresolvedCount > 0 && <div>⚠ {unresolvedCount} item(s) still need a custom crate line before this PO is complete.</div>}
+          {missingCost > 0 && <div>⚠ {missingCost} line(s) missing a cost — fill in the highlighted field(s).</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomLineForm({ itemIndex, defaultName, onAdd }) {
+  const [name, setName] = useState(defaultName || "");
+  const [boxDim, setBoxDim] = useState("");
+  const [qty, setQty] = useState("1");
+  const [cost, setCost] = useState("");
+  const inputStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, padding: "4px 6px", border: "1px solid #C8A000", background: "#fff" };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+      <input style={{ ...inputStyle, width: 160 }} value={name} onChange={e => setName(e.target.value)} placeholder="Piece name" />
+      <input style={{ ...inputStyle, width: 140 }} value={boxDim} onChange={e => setBoxDim(e.target.value)} placeholder="Box dim (W x D x H)" />
+      <input style={{ ...inputStyle, width: 60 }} type="number" value={qty} onChange={e => setQty(e.target.value)} placeholder="Qty" />
+      <input style={{ ...inputStyle, width: 90 }} type="number" value={cost} onChange={e => setCost(e.target.value)} placeholder="Cost" />
+      <button
+        onClick={() => { if (name && boxDim && qty && cost) onAdd({ itemIndex, pieceName: name, boxDim, qty, cost }); }}
+        style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", padding: "6px 12px", background: "#0A0A0A", color: "#fff", border: "none", cursor: "pointer" }}
+      >
+        Add Line
+      </button>
+    </div>
+  );
+}
+
+function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
   const isCrates = mode === "crates";
-  const cols = isCrates ? 5 : 3;
+  const cols = isCrates ? 7 : 5;
+  const customByIndex = new Map((customLines || []).map(c => [c.itemIndex, c]));
+
   return (
     <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
       <div className="dslbl" style={{ marginBottom: 12 }}>{title} — {vendor}</div>
-      {ok.length > 0 && (
-        <table className="ltbl" style={{ marginBottom: review.length ? 14 : 0 }}>
+      {(ok.length > 0 || review.length > 0) && (
+        <table className="ltbl" style={{ marginBottom: 0 }}>
           <thead>
             <tr>
               <th>SKU</th><th>Piece</th>
               {isCrates ? (<><th>Piece Qty</th><th>Crate Qty</th><th>Box Dim</th></>) : (<th>Qty</th>)}
+              <th>Cost</th><th>Line Total</th>
             </tr>
           </thead>
           <tbody>
             {ok.flatMap((r, ri) => {
               let rows;
               if (isCrates) {
-                rows = crateDisplayRows(r).map((row, li) => (
-                  <tr key={`${ri}-${li}`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
-                    <td className="lid">{r.sku}</td>
-                    <td style={{ textTransform: "uppercase", fontSize: 11 }}>{row.pieceName}</td>
-                    <td>{row.pieceQty}</td>
-                    <td>{row.crateQty}{row.piecesInBox ? ` (${row.piecesInBox}/box)` : ""}</td>
-                    <td style={{ fontSize: 10, color: "#999" }}>{row.boxDim || "—"}</td>
-                  </tr>
-                ));
+                rows = crateDisplayRows(r).map((row, li) => {
+                  const cost = (overrides && Object.prototype.hasOwnProperty.call(overrides, row.costKey)) ? overrides[row.costKey] : row.catalogCost;
+                  const isOverridden = overrides && Object.prototype.hasOwnProperty.call(overrides, row.costKey);
+                  const lineTotal = (cost === null || cost === undefined || cost === "") ? null : Number(cost) * row.crateQty;
+                  return (
+                    <tr key={`${ri}-${li}`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
+                      <td className="lid">{r.sku}</td>
+                      <td style={{ textTransform: "uppercase", fontSize: 11 }}>{row.pieceName}</td>
+                      <td>{row.pieceQty}</td>
+                      <td>{row.crateQty}{row.piecesInBox ? ` (${row.piecesInBox}/box)` : ""}</td>
+                      <td style={{ fontSize: 10, color: "#999" }}>{row.boxDim || "—"}</td>
+                      <td><CostField value={cost} isOverridden={isOverridden} onCommit={(v) => onCostChange(row.costKey, v)} /></td>
+                      <td style={{ fontSize: 11 }}>{lineTotal === null ? "—" : fmtMoney(lineTotal)}</td>
+                    </tr>
+                  );
+                });
               } else {
+                const costKey = r.sku;
+                const catalogCost = r.lines[0] ? r.lines[0].cost : null;
+                const cost = (overrides && Object.prototype.hasOwnProperty.call(overrides, costKey)) ? overrides[costKey] : catalogCost;
+                const isOverridden = overrides && Object.prototype.hasOwnProperty.call(overrides, costKey);
+                const lineTotal = (cost === null || cost === undefined || cost === "") ? null : Number(cost) * r.qty;
                 rows = [(
                   <tr key={`${ri}-0`} style={r.dimFlag ? { background: "#FFF8E6" } : undefined}>
                     <td className="lid">{r.sku}</td>
                     <td style={{ textTransform: "uppercase", fontSize: 11 }}>{r.pieceName}</td>
                     <td>{r.qty}</td>
+                    <td><CostField value={cost} isOverridden={isOverridden} onCommit={(v) => onCostChange(costKey, v)} /></td>
+                    <td style={{ fontSize: 11 }}>{lineTotal === null ? "—" : fmtMoney(lineTotal)}</td>
                   </tr>
                 )];
               }
@@ -563,29 +643,62 @@ function VendorPOSubCard({ title, vendor, results, mode }) {
               }
               return rows;
             })}
+            {review.map((r, ri) => {
+              const custom = customByIndex.get(r.itemIndex);
+              if (custom) {
+                const lineTotal = (custom.cost === "" || custom.qty === "") ? null : Number(custom.cost) * Number(custom.qty);
+                return (
+                  <tr key={`rev-${ri}`}>
+                    <td className="lid">{r.sku}</td>
+                    <td style={{ textTransform: "uppercase", fontSize: 11 }}>{custom.pieceName} <span style={{ color: "#C8A000", fontSize: 9 }}>(custom)</span></td>
+                    {isCrates ? (<><td>{custom.qty}</td><td>{custom.qty}</td><td style={{ fontSize: 10, color: "#999" }}>{custom.boxDim}</td></>) : (<td>{custom.qty}</td>)}
+                    <td><CostField value={custom.cost} isOverridden={true} onCommit={(v) => onEditCustom(r.itemIndex, { cost: v })} /></td>
+                    <td style={{ fontSize: 11 }}>
+                      {lineTotal === null ? "—" : fmtMoney(lineTotal)}
+                      <button onClick={() => onRemoveCustom(r.itemIndex)} style={{ marginLeft: 8, border: "none", background: "none", color: "#C8A000", cursor: "pointer", fontSize: 13 }}>×</button>
+                    </td>
+                  </tr>
+                );
+              }
+              return (
+                <tr key={`rev-${ri}`}>
+                  <td colSpan={cols} style={{ padding: 0 }}>
+                    <div style={{ border: "1px solid #C8A000", background: "#FFF8E6", padding: "10px 12px" }}>
+                      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "#7A5500", fontWeight: 700, marginBottom: 4 }}>
+                        Requires Review — {r.sku} ×{r.qty}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#7A5500" }}>{r.reason}</div>
+                      <CustomLineForm itemIndex={r.itemIndex} defaultName={r.pieceName} onAdd={onAddCustom} />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
-      {review.map((r, i) => (
-        <div key={i} style={{ border: "1px solid #C8A000", background: "#FFF8E6", padding: "10px 12px", marginBottom: 8 }}>
-          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "#7A5500", fontWeight: 700, marginBottom: 4 }}>
-            Requires Review — {r.sku} ×{r.qty}
-          </div>
-          <div style={{ fontSize: 11, color: "#7A5500" }}>{r.reason}</div>
-        </div>
-      ))}
       {ok.length === 0 && review.length === 0 && (
         <div style={{ color: "#CCC", fontSize: 11, fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>
           No pieces on this order
         </div>
       )}
+      {(ok.length > 0 || (customLines && customLines.length > 0)) && <VendorPOTotals totals={totals} currency="MXN" />}
     </div>
   );
 }
 
-function VendorPOPanel({ order }) {
+function VendorPOPanel({ order, onSave }) {
   if (order.status !== "In Production") return null;
+  const vp = order.vendorPOs || {};
+  const crateState = vp.crates || { overrides: {}, customLines: [] };
+  const coverState = vp.covers || { overrides: {}, customLines: [] };
   const { crates, covers } = matchOrderItems(order.items);
+
+  const save = (patch) => onSave({ ...vp, ...patch });
+
+  const cTotals = calcPOTotals(crates, "crates", crateState.overrides, crateState.customLines);
+  const vTotals = calcPOTotals(covers, "covers", coverState.overrides, coverState.customLines);
+
   return (
     <div style={{ background: "#F5F4F1", borderTop: "1px solid #DDDAD3", padding: "18px 32px" }}>
       <div className="dslbl" style={{ marginBottom: 14 }}>Vendor POs</div>
@@ -595,8 +708,22 @@ function VendorPOPanel({ order }) {
         </div>
       ) : (
         <>
-          <VendorPOSubCard title="Crates" vendor="Empaques Fuertes" results={crates} mode="crates" />
-          <VendorPOSubCard title="Covers" vendor="Duco" results={covers} mode="covers" />
+          <VendorPOSubCard
+            title="Crates" vendor="Empaques Fuertes" mode="crates" results={crates}
+            overrides={crateState.overrides} customLines={crateState.customLines} totals={cTotals} currency="MXN"
+            onCostChange={(costKey, val) => save({ crates: { ...crateState, overrides: { ...crateState.overrides, [costKey]: val } } })}
+            onAddCustom={(line) => save({ crates: { ...crateState, customLines: [...crateState.customLines, line] } })}
+            onRemoveCustom={(itemIndex) => save({ crates: { ...crateState, customLines: crateState.customLines.filter(c => c.itemIndex !== itemIndex) } })}
+            onEditCustom={(itemIndex, patch) => save({ crates: { ...crateState, customLines: crateState.customLines.map(c => c.itemIndex === itemIndex ? { ...c, ...patch } : c) } })}
+          />
+          <VendorPOSubCard
+            title="Covers" vendor="Duco" mode="covers" results={covers}
+            overrides={coverState.overrides} customLines={coverState.customLines} totals={vTotals} currency="MXN"
+            onCostChange={(costKey, val) => save({ covers: { ...coverState, overrides: { ...coverState.overrides, [costKey]: val } } })}
+            onAddCustom={(line) => save({ covers: { ...coverState, customLines: [...coverState.customLines, line] } })}
+            onRemoveCustom={(itemIndex) => save({ covers: { ...coverState, customLines: coverState.customLines.filter(c => c.itemIndex !== itemIndex) } })}
+            onEditCustom={(itemIndex, patch) => save({ covers: { ...coverState, customLines: coverState.customLines.map(c => c.itemIndex === itemIndex ? { ...c, ...patch } : c) } })}
+          />
         </>
       )}
     </div>
@@ -821,7 +948,7 @@ function AdminView() {
                             </div>
                           </div>
                         )}
-                        <VendorPOPanel order={order} />
+                        <VendorPOPanel order={order} onSave={(vp) => updProjectInfo(order.id, "vendorPOs", vp)} />
                         <div className="dftr">
                           <div className="dttl">Order Total: {fmt(order.total)}</div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>

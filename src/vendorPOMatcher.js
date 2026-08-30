@@ -101,8 +101,8 @@ export function matchItemToCovers(item) {
 export function matchOrderItems(items) {
   const realPieces = (items || []).filter((it) => it.id !== "SAM-817");
   return {
-    crates: realPieces.map(matchItemToCrates),
-    covers: realPieces.map(matchItemToCovers),
+    crates: realPieces.map((it, i) => ({ ...matchItemToCrates(it), itemIndex: i })),
+    covers: realPieces.map((it, i) => ({ ...matchItemToCovers(it), itemIndex: i })),
   };
 }
 
@@ -116,12 +116,14 @@ export function crateDisplayRows(result) {
       crateQty: l.quantity,
       piecesInBox: null,
       boxDim: l.boxDim,
+      costKey: `${result.sku}|${l.boxDim}`,
+      catalogCost: l.cost,
     }));
   }
   const groups = new Map();
   for (const l of lines) {
     const key = `${l.piecesInBox}|${l.boxDim}`;
-    const g = groups.get(key) || { pieceName: l.pieceName, piecesInBox: l.piecesInBox, boxDim: l.boxDim, crateQty: 0 };
+    const g = groups.get(key) || { pieceName: l.pieceName, piecesInBox: l.piecesInBox, boxDim: l.boxDim, crateQty: 0, cost: l.cost };
     g.crateQty += 1;
     groups.set(key, g);
   }
@@ -131,5 +133,56 @@ export function crateDisplayRows(result) {
     crateQty: g.crateQty,
     piecesInBox: g.piecesInBox,
     boxDim: g.boxDim,
+    costKey: `${result.sku}|${g.boxDim}`,
+    catalogCost: g.cost,
   }));
+}
+
+export function effectiveCost(costKey, overrides, catalogCost) {
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, costKey)) {
+    const v = overrides[costKey];
+    return v === "" || v === null || v === undefined ? null : Number(v);
+  }
+  return catalogCost === null || catalogCost === undefined ? null : Number(catalogCost);
+}
+
+export function calcPOTotals(matchResults, mode, overrides, customLines) {
+  const ov = overrides || {};
+  const custom = customLines || [];
+  const resolvedIndexes = new Set(custom.map((c) => c.itemIndex));
+
+  let subtotal = 0;
+  let missingCost = 0;
+  let unresolvedCount = 0;
+
+  for (const r of matchResults) {
+    if (r.status === "REQUIRES_REVIEW") {
+      if (!resolvedIndexes.has(r.itemIndex)) unresolvedCount += 1;
+      continue;
+    }
+    if (mode === "crates") {
+      for (const row of crateDisplayRows(r)) {
+        const cost = effectiveCost(row.costKey, ov, row.catalogCost);
+        if (cost === null) missingCost += 1;
+        else subtotal += cost * row.crateQty;
+      }
+    } else {
+      const costKey = r.sku;
+      const catalogCost = r.lines[0] ? r.lines[0].cost : null;
+      const cost = effectiveCost(costKey, ov, catalogCost);
+      if (cost === null) missingCost += 1;
+      else subtotal += cost * r.qty;
+    }
+  }
+
+  for (const c of custom) {
+    const cost = c.cost === "" || c.cost === null || c.cost === undefined ? null : Number(c.cost);
+    const qty = c.qty === "" || c.qty === null || c.qty === undefined ? null : Number(c.qty);
+    if (cost === null || qty === null) missingCost += 1;
+    else subtotal += cost * qty;
+  }
+
+  const iva = subtotal * 0.16;
+  const total = subtotal + iva;
+  return { subtotal, iva, total, missingCost, unresolvedCount };
 }
