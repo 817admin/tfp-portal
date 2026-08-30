@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { matchOrderItems, crateDisplayRows, calcPOTotals } from "./vendorPOMatcher";
+import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, nextStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -506,10 +506,13 @@ function ClientHistory() {
   );
 }
 
-function CostField({ value, isOverridden, onCommit, placeholder }) {
+function CostField({ value, isOverridden, onCommit, placeholder, disabled }) {
   const str = (v) => (v === null || v === undefined ? "" : String(v));
   const [local, setLocal] = useState(str(value));
   useEffect(() => { setLocal(str(value)); }, [value]);
+  if (disabled) {
+    return <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: "#666" }}>{str(value) || "—"}</span>;
+  }
   return (
     <input
       type="number"
@@ -569,16 +572,63 @@ function CustomLineForm({ itemIndex, defaultName, onAdd }) {
   );
 }
 
-function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency }) {
+function StatusPill({ status }) {
+  const c = STATUS_COLORS[status] || STATUS_COLORS.Pending;
+  return (
+    <span style={{
+      fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase",
+      padding: "3px 8px", background: c.bg, color: c.fg, fontWeight: 700,
+    }}>
+      {status}
+    </span>
+  );
+}
+
+function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency, poId, poState, onAdvance, onToggleLock }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
   const isCrates = mode === "crates";
   const cols = isCrates ? 7 : 5;
   const customByIndex = new Map((customLines || []).map(c => [c.itemIndex, c]));
+  const status = poState.status || "Pending";
+  const locked = !!poState.locked;
+  const displayPoNumber = poState.poNumber || poNumberPreview(poId, isCrates ? "C" : "V");
+  const next = nextStatus(status);
 
   return (
     <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
-      <div className="dslbl" style={{ marginBottom: 12 }}>{title} — {vendor}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div className="dslbl">{title} — {vendor}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {displayPoNumber && (
+            <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#999" }}>
+              PO# {displayPoNumber}{!poState.poNumber && " (preview)"}
+            </span>
+          )}
+          <StatusPill status={status} />
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 10, color: "#C8A000", fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.04em" }}>
+          {locked && "🔒 Locked — click Unlock to edit costs or lines"}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {locked ? (
+            <button onClick={() => onToggleLock(false)} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "6px 12px", background: "#fff", color: "#0A0A0A", border: "1px solid #0A0A0A", cursor: "pointer" }}>
+              Unlock to Edit
+            </button>
+          ) : status !== "Pending" && (
+            <button onClick={() => onToggleLock(true)} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "6px 12px", background: "#fff", color: "#0A0A0A", border: "1px solid #0A0A0A", cursor: "pointer" }}>
+              Lock
+            </button>
+          )}
+          {next && (
+            <button onClick={onAdvance} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "6px 12px", background: "#0A0A0A", color: "#fff", border: "none", cursor: "pointer" }}>
+              Mark as {next} →
+            </button>
+          )}
+        </div>
+      </div>
       {(ok.length > 0 || review.length > 0) && (
         <table className="ltbl" style={{ marginBottom: 0 }}>
           <thead>
@@ -603,7 +653,7 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
                       <td>{row.pieceQty}</td>
                       <td>{row.crateQty}{row.piecesInBox ? ` (${row.piecesInBox}/box)` : ""}</td>
                       <td style={{ fontSize: 10, color: "#999" }}>{row.boxDim || "—"}</td>
-                      <td><CostField value={cost} isOverridden={isOverridden} onCommit={(v) => onCostChange(row.costKey, v)} /></td>
+                      <td><CostField value={cost} isOverridden={isOverridden} disabled={locked} onCommit={(v) => onCostChange(row.costKey, v)} /></td>
                       <td style={{ fontSize: 11 }}>{lineTotal === null ? "—" : fmtMoney(lineTotal)}</td>
                     </tr>
                   );
@@ -619,7 +669,7 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
                     <td className="lid">{r.sku}</td>
                     <td style={{ textTransform: "uppercase", fontSize: 11 }}>{r.pieceName}</td>
                     <td>{r.qty}</td>
-                    <td><CostField value={cost} isOverridden={isOverridden} onCommit={(v) => onCostChange(costKey, v)} /></td>
+                    <td><CostField value={cost} isOverridden={isOverridden} disabled={locked} onCommit={(v) => onCostChange(costKey, v)} /></td>
                     <td style={{ fontSize: 11 }}>{lineTotal === null ? "—" : fmtMoney(lineTotal)}</td>
                   </tr>
                 )];
@@ -652,10 +702,10 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
                     <td className="lid">{r.sku}</td>
                     <td style={{ textTransform: "uppercase", fontSize: 11 }}>{custom.pieceName} <span style={{ color: "#C8A000", fontSize: 9 }}>(custom)</span></td>
                     {isCrates ? (<><td>{custom.qty}</td><td>{custom.qty}</td><td style={{ fontSize: 10, color: "#999" }}>{custom.boxDim}</td></>) : (<td>{custom.qty}</td>)}
-                    <td><CostField value={custom.cost} isOverridden={true} onCommit={(v) => onEditCustom(r.itemIndex, { cost: v })} /></td>
+                    <td><CostField value={custom.cost} isOverridden={true} disabled={locked} onCommit={(v) => onEditCustom(r.itemIndex, { cost: v })} /></td>
                     <td style={{ fontSize: 11 }}>
                       {lineTotal === null ? "—" : fmtMoney(lineTotal)}
-                      <button onClick={() => onRemoveCustom(r.itemIndex)} style={{ marginLeft: 8, border: "none", background: "none", color: "#C8A000", cursor: "pointer", fontSize: 13 }}>×</button>
+                      {!locked && <button onClick={() => onRemoveCustom(r.itemIndex)} style={{ marginLeft: 8, border: "none", background: "none", color: "#C8A000", cursor: "pointer", fontSize: 13 }}>×</button>}
                     </td>
                   </tr>
                 );
@@ -668,7 +718,11 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
                         Requires Review — {r.sku} ×{r.qty}
                       </div>
                       <div style={{ fontSize: 11, color: "#7A5500" }}>{r.reason}</div>
-                      <CustomLineForm itemIndex={r.itemIndex} defaultName={r.pieceName} onAdd={onAddCustom} />
+                      {locked ? (
+                        <div style={{ fontSize: 10, color: "#7A5500", marginTop: 8 }}>Locked — unlock to add a custom crate line.</div>
+                      ) : (
+                        <CustomLineForm itemIndex={r.itemIndex} defaultName={r.pieceName} onAdd={onAddCustom} />
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -690,14 +744,23 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
 function VendorPOPanel({ order, onSave }) {
   if (order.status !== "In Production") return null;
   const vp = order.vendorPOs || {};
-  const crateState = vp.crates || { overrides: {}, customLines: [] };
-  const coverState = vp.covers || { overrides: {}, customLines: [] };
+  const crateState = { ...defaultPOState(), ...(vp.crates || {}) };
+  const coverState = { ...defaultPOState(), ...(vp.covers || {}) };
   const { crates, covers } = matchOrderItems(order.items);
 
   const save = (patch) => onSave({ ...vp, ...patch });
 
   const cTotals = calcPOTotals(crates, "crates", crateState.overrides, crateState.customLines);
   const vTotals = calcPOTotals(covers, "covers", coverState.overrides, coverState.customLines);
+
+  const advanceCrates = () => {
+    const patch = advanceStatusPatch(crateState, order.poId, "C");
+    if (patch) save({ crates: { ...crateState, ...patch } });
+  };
+  const advanceCovers = () => {
+    const patch = advanceStatusPatch(coverState, order.poId, "V");
+    if (patch) save({ covers: { ...coverState, ...patch } });
+  };
 
   return (
     <div style={{ background: "#F5F4F1", borderTop: "1px solid #DDDAD3", padding: "18px 32px" }}>
@@ -711,6 +774,9 @@ function VendorPOPanel({ order, onSave }) {
           <VendorPOSubCard
             title="Crates" vendor="Empaques Fuertes" mode="crates" results={crates}
             overrides={crateState.overrides} customLines={crateState.customLines} totals={cTotals} currency="MXN"
+            poId={order.poId} poState={crateState}
+            onAdvance={advanceCrates}
+            onToggleLock={(val) => save({ crates: { ...crateState, locked: val } })}
             onCostChange={(costKey, val) => save({ crates: { ...crateState, overrides: { ...crateState.overrides, [costKey]: val } } })}
             onAddCustom={(line) => save({ crates: { ...crateState, customLines: [...crateState.customLines, line] } })}
             onRemoveCustom={(itemIndex) => save({ crates: { ...crateState, customLines: crateState.customLines.filter(c => c.itemIndex !== itemIndex) } })}
@@ -719,6 +785,9 @@ function VendorPOPanel({ order, onSave }) {
           <VendorPOSubCard
             title="Covers" vendor="Duco" mode="covers" results={covers}
             overrides={coverState.overrides} customLines={coverState.customLines} totals={vTotals} currency="MXN"
+            poId={order.poId} poState={coverState}
+            onAdvance={advanceCovers}
+            onToggleLock={(val) => save({ covers: { ...coverState, locked: val } })}
             onCostChange={(costKey, val) => save({ covers: { ...coverState, overrides: { ...coverState.overrides, [costKey]: val } } })}
             onAddCustom={(line) => save({ covers: { ...coverState, customLines: [...coverState.customLines, line] } })}
             onRemoveCustom={(itemIndex) => save({ covers: { ...coverState, customLines: coverState.customLines.filter(c => c.itemIndex !== itemIndex) } })}

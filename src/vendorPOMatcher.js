@@ -98,6 +98,10 @@ export function matchItemToCovers(item) {
   };
 }
 
+// Attaches a stable itemIndex to every result (position within the real,
+// non-sample pieces of the order). Custom lines reference this index so a
+// resolved review item can be matched back to the piece that spawned it,
+// independent of SKU collisions.
 export function matchOrderItems(items) {
   const realPieces = (items || []).filter((it) => it.id !== "SAM-817");
   return {
@@ -106,10 +110,14 @@ export function matchOrderItems(items) {
   };
 }
 
+// Consolidates a crate result's per-crate lines into display rows with
+// PIECE QTY, CRATE QTY, and cost info for the review/cost panel.
+// costKey uniquely identifies a priceable config: "SKU|boxDim".
 export function crateDisplayRows(result) {
   const lines = result.lines || [];
   if (!lines.length) return [];
   if (lines[0].piecesInBox === undefined) {
+    // Structural: one row per named component.
     return lines.map((l) => ({
       pieceName: l.pieceName,
       pieceQty: result.qty,
@@ -138,6 +146,8 @@ export function crateDisplayRows(result) {
   }));
 }
 
+// Resolves the effective unit cost for a crate row: order-specific override
+// wins, else the catalog default, else null (needs input).
 export function effectiveCost(costKey, overrides, catalogCost) {
   if (overrides && Object.prototype.hasOwnProperty.call(overrides, costKey)) {
     const v = overrides[costKey];
@@ -146,6 +156,11 @@ export function effectiveCost(costKey, overrides, catalogCost) {
   return catalogCost === null || catalogCost === undefined ? null : Number(catalogCost);
 }
 
+// Computes Subtotal / IVA(16%) / Total for one PO (crates or covers).
+// matchResults: the .crates or .covers array from matchOrderItems.
+// mode: "crates" | "covers"
+// overrides: { [costKey]: number|"" } per-order cost overrides
+// customLines: [{ itemIndex, pieceName, boxDim, qty, cost }] resolving REQUIRES_REVIEW items
 export function calcPOTotals(matchResults, mode, overrides, customLines) {
   const ov = overrides || {};
   const custom = customLines || [];
@@ -185,4 +200,61 @@ export function calcPOTotals(matchResults, mode, overrides, customLines) {
   const iva = subtotal * 0.16;
   const total = subtotal + iva;
   return { subtotal, iva, total, missingCost, unresolvedCount };
+}
+
+// PO numbering + status tracking (pure helpers, no side effects).
+
+export const STATUS_ORDER = ["Pending", "Sent", "Confirmed", "Delivered"];
+
+export const STATUS_COLORS = {
+  Pending: { bg: "#FFF8E6", fg: "#C8A000" },
+  Sent: { bg: "#E8F0FE", fg: "#2563EB" },
+  Confirmed: { bg: "#E8F5E9", fg: "#2E7D32" },
+  Delivered: { bg: "#F0F0F0", fg: "#666666" },
+};
+
+export function nextStatus(current) {
+  const i = STATUS_ORDER.indexOf(current || "Pending");
+  if (i < 0 || i >= STATUS_ORDER.length - 1) return null;
+  return STATUS_ORDER[i + 1];
+}
+
+// Live PO number preview from the order's 817 PO ID. Returns null until the
+// PO ID is set. This is NOT the frozen number — see poState below.
+export function poNumberPreview(orderPoId, suffix) {
+  if (!orderPoId) return null;
+  return `${orderPoId}-${suffix}`;
+}
+
+// Normalizes a possibly-missing vendorPOs sub-state (crates or covers) to a
+// safe default shape.
+export function defaultPOState() {
+  return {
+    overrides: {},
+    customLines: [],
+    status: "Pending",
+    poNumber: null,
+    locked: false,
+    sentAt: null,
+    confirmedAt: null,
+    deliveredAt: null,
+  };
+}
+
+// Computes the patch to apply when advancing to the next status.
+// Freezes the PO number the first time status leaves "Pending".
+// Always re-locks on advance (locking is a separate, reversible toggle).
+export function advanceStatusPatch(poState, orderPoId, suffix) {
+  const current = poState.status || "Pending";
+  const next = nextStatus(current);
+  if (!next) return null;
+  const now = new Date().toISOString();
+  const patch = { status: next, locked: true };
+  if (current === "Pending") {
+    patch.poNumber = poState.poNumber || poNumberPreview(orderPoId, suffix);
+  }
+  if (next === "Sent") patch.sentAt = now;
+  if (next === "Confirmed") patch.confirmedAt = now;
+  if (next === "Delivered") patch.deliveredAt = now;
+  return patch;
 }
