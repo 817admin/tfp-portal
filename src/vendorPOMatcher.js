@@ -238,6 +238,7 @@ export function defaultPOState() {
     sentAt: null,
     confirmedAt: null,
     deliveredAt: null,
+    revertLog: [],
   };
 }
 
@@ -257,4 +258,24 @@ export function advanceStatusPatch(poState, orderPoId, suffix) {
   if (next === "Confirmed") patch.confirmedAt = now;
   if (next === "Delivered") patch.deliveredAt = now;
   return patch;
+}
+
+// Reverts to the previous status (mirror of nextStatus). Does NOT clear the
+// timestamp recorded for the status being left (sentAt/confirmedAt/deliveredAt)
+// — that stays as a factual record. Instead, appends an entry to revertLog so
+// the revert itself is visible. Always unlocks, since the point of reverting
+// is to let the fields be edited again.
+export function prevStatus(current) {
+  const i = STATUS_ORDER.indexOf(current || "Pending");
+  if (i <= 0) return null;
+  return STATUS_ORDER[i - 1];
+}
+
+export function revertStatusPatch(poState) {
+  const current = poState.status || "Pending";
+  const prev = prevStatus(current);
+  if (!prev) return null;
+  const now = new Date().toISOString();
+  const revertLog = [...(poState.revertLog || []), { from: current, to: prev, at: now }];
+  return { status: prev, locked: false, revertLog };
 }

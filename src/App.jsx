@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, nextStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
+import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, revertStatusPatch, nextStatus, prevStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
 import { buildPOLineItems, buildPOHtml, buildPOPlainText, buildMailtoUrl } from "./vendorPODocument";
 import { VENDOR_INFO } from "./vendorPOCatalog";
 
@@ -664,7 +664,7 @@ function PODocumentActions({ mode, poNumber, results, overrides, customLines, to
   );
 }
 
-function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency, poId, poState, onAdvance, onToggleLock }) {
+function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines, onCostChange, onAddCustom, onRemoveCustom, onEditCustom, totals, currency, poId, poState, onAdvance, onRevert, onToggleLock }) {
   const ok = results.filter(r => r.status === "OK");
   const review = results.filter(r => r.status === "REQUIRES_REVIEW");
   const isCrates = mode === "crates";
@@ -674,6 +674,8 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
   const locked = !!poState.locked;
   const displayPoNumber = poState.poNumber || poNumberPreview(poId, isCrates ? "C" : "V");
   const next = nextStatus(status);
+  const prev = prevStatus(status);
+  const revertLog = poState.revertLog || [];
 
   return (
     <div style={{ background: "#fff", border: "1px solid #DDDAD3", padding: 16, marginBottom: 14 }}>
@@ -688,6 +690,13 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
           <StatusPill status={status} />
         </div>
       </div>
+      {revertLog.length > 0 && (
+        <div style={{ fontSize: 10, color: "#999", fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.02em", marginBottom: 8 }}>
+          {revertLog.map((r, i) => (
+            <div key={i}>↩ Reverted {r.from} → {r.to} on {new Date(r.at).toLocaleString()}</div>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontSize: 10, color: "#C8A000", fontFamily: "'IBM Plex Mono',monospace", letterSpacing: "0.04em" }}>
           {locked && "🔒 Locked — click Unlock to edit costs or lines"}
@@ -700,6 +709,16 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
           ) : status !== "Pending" && (
             <button onClick={() => onToggleLock(true)} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "6px 12px", background: "#fff", color: "#0A0A0A", border: "1px solid #0A0A0A", cursor: "pointer" }}>
               Lock
+            </button>
+          )}
+          {prev && (
+            <button
+              onClick={() => {
+                if (confirm(`Revert status from ${status} back to ${prev}? This will unlock the fields. A note will be kept showing this revert.`)) onRevert();
+              }}
+              style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "6px 12px", background: "#fff", color: "#B00020", border: "1px solid #B00020", cursor: "pointer" }}
+            >
+              ↩ Revert to {prev}
             </button>
           )}
           {next && (
@@ -844,6 +863,14 @@ function VendorPOPanel({ order, onSave }) {
     const patch = advanceStatusPatch(coverState, order.poId, "V");
     if (patch) save({ covers: { ...coverState, ...patch } });
   };
+  const revertCrates = () => {
+    const patch = revertStatusPatch(crateState);
+    if (patch) save({ crates: { ...crateState, ...patch } });
+  };
+  const revertCovers = () => {
+    const patch = revertStatusPatch(coverState);
+    if (patch) save({ covers: { ...coverState, ...patch } });
+  };
 
   return (
     <div style={{ background: "#F5F4F1", borderTop: "1px solid #DDDAD3", padding: "18px 32px" }}>
@@ -859,6 +886,7 @@ function VendorPOPanel({ order, onSave }) {
             overrides={crateState.overrides} customLines={crateState.customLines} totals={cTotals} currency="MXN"
             poId={order.poId} poState={crateState}
             onAdvance={advanceCrates}
+            onRevert={revertCrates}
             onToggleLock={(val) => save({ crates: { ...crateState, locked: val } })}
             onCostChange={(costKey, val) => save({ crates: { ...crateState, overrides: { ...crateState.overrides, [costKey]: val } } })}
             onAddCustom={(line) => save({ crates: { ...crateState, customLines: [...crateState.customLines, line] } })}
@@ -870,6 +898,7 @@ function VendorPOPanel({ order, onSave }) {
             overrides={coverState.overrides} customLines={coverState.customLines} totals={vTotals} currency="MXN"
             poId={order.poId} poState={coverState}
             onAdvance={advanceCovers}
+            onRevert={revertCovers}
             onToggleLock={(val) => save({ covers: { ...coverState, locked: val } })}
             onCostChange={(costKey, val) => save({ covers: { ...coverState, overrides: { ...coverState.overrides, [costKey]: val } } })}
             onAddCustom={(line) => save({ covers: { ...coverState, customLines: [...coverState.customLines, line] } })}
