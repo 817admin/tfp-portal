@@ -387,14 +387,24 @@ function ClientHistory() {
   const [orders, setOrders] = useState([]);
   const [exp, setExp] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [sf, setSf] = useState("All");
+  const [tf, setTf] = useState("All");
+  const [cf, setCf] = useState("All Categories");
 
-  useEffect(() => { loadOrders().then(o => { setOrders(o); setLoading(false); }); }, []);
+  const refresh = useCallback(async () => { const d = await loadOrders(); setOrders(d); setLoading(false); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
 
   if (loading) return <div className="noord">Loading...</div>;
   if (orders.length === 0) return (
     <div className="noord" style={{ padding: "80px 40px" }}>
       No requests submitted yet
     </div>
+  );
+
+  const list = orders.filter(o =>
+    (sf === "All" || o.status === sf) &&
+    (tf === "All" || (tf === "QR" ? effectiveType(o) === "Quote Request" : effectiveType(o) === "Purchase Order")) &&
+    (cf === "All Categories" || o.category === cf)
   );
 
   return (
@@ -408,10 +418,19 @@ function ClientHistory() {
           <div key={l} className="scell"><div className="slbl">{l}</div><div className="sval">{v}</div></div>
         ))}
       </div>
+      <div className="frow">
+        {["All", "QR", "PO"].map(t => <button key={t} className={"fb" + (tf === t ? " on" : "")} onClick={() => setTf(t)}>{t === "All" ? "All Types" : t === "QR" ? "Quotes" : "Purchase Orders"}</button>)}
+        <div style={{ width: 1, height: 18, background: "#D8D5CE", margin: "0 4px" }} />
+        {["All", ...STATUSES].map(s => <button key={s} className={"fb" + (sf === s ? " on" : "")} onClick={() => setSf(s)}>{s}</button>)}
+        <div style={{ width: 1, height: 18, background: "#D8D5CE", margin: "0 4px" }} />
+        {["All Categories", "Gallery", "Retail"].map(c => <button key={c} className={"fb" + (cf === c ? " on" : "")} onClick={() => setCf(c)}>{c}</button>)}
+        <button className="rfbtn" onClick={refresh}>↻ Refresh</button>
+      </div>
+      {list.length === 0 ? <div className="noord">No requests match current filters</div> : (
       <table className="otbl">
         <thead><tr><th>Reference</th><th>Type</th><th>Pieces</th><th>Date</th><th>Total</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          {orders.map(order => {
+          {list.map(order => {
             const ss = STATUS_STYLE[order.status] || {};
             const isOpen = exp === order.id;
             const hasPendingSample = order.items.some(i => i.id === "SAM-817" && (!i.price || i.price === 0));
@@ -508,6 +527,7 @@ function ClientHistory() {
           })}
         </tbody>
       </table>
+      )}
     </div>
   );
 }
