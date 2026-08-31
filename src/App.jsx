@@ -554,25 +554,11 @@ function InvoiceActions({ order }) {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
-  const handleDownload = () => {
-    const blob = new Blob([getHtml()], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Invoice-${order.poId || order.id}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  };
-
-  const btnStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "7px 12px", border: "1px solid #0A0A0A", cursor: "pointer", background: "#fff", color: "#0A0A0A" };
-  const primaryBtnStyle = { ...btnStyle, background: "#0A0A0A", color: "#fff", border: "none" };
+  const btnStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "7px 12px", border: "1px solid #0A0A0A", cursor: "pointer", background: "#0A0A0A", color: "#fff" };
 
   return (
     <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #DDDAD3", display: "flex", gap: 8, alignItems: "center" }}>
       <button onClick={handlePreview} style={btnStyle}>Preview Invoice</button>
-      <button onClick={handleDownload} style={primaryBtnStyle}>Download Invoice</button>
     </div>
   );
 }
@@ -688,18 +674,6 @@ function PODocumentActions({ mode, poNumber, results, overrides, customLines, to
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
-  const handleDownload = () => {
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${poNumber || "PO"}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  };
-
   const handleSend = async () => {
     const copied = await copyHtmlToClipboard(html, plainText);
     setStatus(copied ? "Copied to clipboard \u2713 opening Gmail\u2026" : "Opening Gmail\u2026");
@@ -725,7 +699,6 @@ function PODocumentActions({ mode, poNumber, results, overrides, customLines, to
       )}
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={handlePreview} style={btnStyle}>Preview</button>
-        <button onClick={handleDownload} style={btnStyle}>Download</button>
         <button onClick={handleSend} style={primaryBtnStyle}>Send via Gmail</button>
         {status && <span style={{ fontSize: 10, color: "#666", fontFamily: "'IBM Plex Mono',monospace" }}>{status}</span>}
       </div>
