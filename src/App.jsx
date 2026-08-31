@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, revertStatusPatch, nextStatus, prevStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
 import { buildPOLineItems, buildPOHtml, buildPOPlainText, buildMailtoUrl } from "./vendorPODocument";
 import { VENDOR_INFO } from "./vendorPOCatalog";
+import { buildInvoiceHtml } from "./clientInvoiceDocument";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -465,6 +466,9 @@ function ClientHistory() {
                             {hasPendingSample ? `${fmt(order.total)} + samples` : `Total: ${fmt(order.total)}`}
                           </span>
                         </div>
+                        {["In Production", "Completed"].includes(order.status) && order.poId && (
+                          <InvoiceActions order={order} />
+                        )}
                         {order.notes && (
                           <div style={{ marginTop: 16 }}>
                             <div className="dslbl">Notes</div>
@@ -504,6 +508,51 @@ function ClientHistory() {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Client-facing invoice Preview/Download. Available once an order has
+// reached "In Production" (matches the existing confirmation-email trigger)
+// and stays available through "Completed" so the client doesn't lose access
+// to their own invoice once the order finishes.
+function InvoiceActions({ order }) {
+  const hasPendingSample = order.items.some(i => i.id === "SAM-817" && (!i.price || i.price === 0));
+
+  const getHtml = () => buildInvoiceHtml({
+    poId: order.poId,
+    orderDate: order.date,
+    items: order.items,
+    total: order.total,
+    hasPendingSample,
+  });
+
+  const handlePreview = () => {
+    const blob = new Blob([getHtml()], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([getHtml()], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Invoice-${order.poId || order.id}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  const btnStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "7px 12px", border: "1px solid #0A0A0A", cursor: "pointer", background: "#fff", color: "#0A0A0A" };
+  const primaryBtnStyle = { ...btnStyle, background: "#0A0A0A", color: "#fff", border: "none" };
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #DDDAD3", display: "flex", gap: 8, alignItems: "center" }}>
+      <button onClick={handlePreview} style={btnStyle}>Preview Invoice</button>
+      <button onClick={handleDownload} style={primaryBtnStyle}>Download Invoice</button>
     </div>
   );
 }
