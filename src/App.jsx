@@ -49,15 +49,19 @@ async function loadOrders() {
     return await r.json();
   } catch { return []; }
 }
-async function saveOrders(orders) {
+// Every save is a MERGE on the server (adds/updates the orders sent, never
+// removes others). Deletes are explicit, by ID. See api/orders.js.
+async function postOrders(body) {
   try {
     await fetch("/api/orders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(orders),
+      body: JSON.stringify(body),
     });
   } catch {}
 }
+async function saveOrders(orders) { return postOrders({ op: "merge", orders }); }
+async function deleteOrder(id) { return postOrders({ op: "delete", id }); }
 
 const G = `
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -991,7 +995,7 @@ function AdminView() {
   const del = async id => {
     if (!confirm("Delete this request?")) return;
     const u = orders.filter(o => o.id !== id);
-    setOrders(u); await saveOrders(u); setExp(null);
+    setOrders(u); await deleteOrder(id); setExp(null);
   };
 
   const list = orders.filter(o =>
