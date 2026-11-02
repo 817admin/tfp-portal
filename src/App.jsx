@@ -36,6 +36,28 @@ const fmt = n => new Intl.NumberFormat("en-US", { style: "currency", currency: "
 const fmtDate = d => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const effectiveType = order => ["In Production", "Completed"].includes(order.status) ? "Purchase Order" : order.requestType;
 
+// Fabric import & transport, Texas → Mexico City (standardized for TFP).
+// First roll $130, each additional roll $95. Example: 3 rolls = $130 + $95 + $95 = $320.
+// Kept separate from order.total so dashboards and margins stay furniture-only.
+const FABRIC_FIRST_ROLL = 130;
+const FABRIC_ADDL_ROLL = 95;
+const COM_IDS = CATALOG.filter(i => /Fabric:\s*COM/.test(i.description)).map(i => i.id);
+const needsFabric = items => (items || []).some(i => COM_IDS.includes(i.id));
+const fabricFee = rolls => { const n = Math.max(0, parseInt(rolls, 10) || 0); return n === 0 ? 0 : FABRIC_FIRST_ROLL + FABRIC_ADDL_ROLL * (n - 1); };
+const rollsLabel = n => `${n} roll${Number(n) === 1 ? "" : "s"}`;
+
+// Shipment tracking (fabric and samples): carrier → public tracking page.
+const CARRIERS = ["UPS", "FedEx", "DHL", "Estafeta", "Other"];
+const trackingUrl = (carrier, num) => {
+  const n = encodeURIComponent(String(num || "").trim());
+  if (!n) return null;
+  if (carrier === "UPS") return `https://www.ups.com/track?tracknum=${n}`;
+  if (carrier === "FedEx") return `https://www.fedex.com/fedextrack/?trknbr=${n}`;
+  if (carrier === "DHL") return `https://www.dhl.com/global-en/home/tracking/tracking-express.html?submit=1&tracking-id=${n}`;
+  if (carrier === "Estafeta") return "https://www.estafeta.com/herramientas/rastreo";
+  return null;
+};
+
 function genId(type) {
   const d = new Date();
   const p = type === "Purchase Order" ? "PO" : "QR";
@@ -62,6 +84,18 @@ async function postOrders(body) {
 }
 async function saveOrders(orders) { return postOrders({ op: "merge", orders }); }
 async function deleteOrder(id) { return postOrders({ op: "delete", id }); }
+// Changes only the fields sent on one order; everything else stays as stored.
+async function patchOrder(id, fields) { return postOrders({ op: "patch", id, fields }); }
+// Applies a change to one order's shipment list starting from the latest
+// stored copy, so the client and admin never erase each other's lines.
+async function updateTracking(orderId, change) {
+  const fresh = await loadOrders();
+  const cur = fresh.find(o => o.id === orderId);
+  if (!cur) return null;
+  const tracking = change(cur.tracking || []);
+  await patchOrder(orderId, { tracking });
+  return tracking;
+}
 
 const G = `
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -205,6 +239,7 @@ function ClientView({ onSubmitted }) {
   const [sample, setSample] = useState({ inCart: false, dimensions: "", description: "" });
   const [pricingAcked, setPricingAcked] = useState(false);
   const [category, setCategory] = useState("Gallery");
+  const [fabricRolls, setFabricRolls] = useState("");
 
   const cats = ["All", "Tables", "Seating", "Case Goods"];
   const list = CATALOG.filter(i =>
@@ -219,23 +254,26 @@ function ClientView({ onSubmitted }) {
   const rem = id => setCart(c => c.filter(x => x.id !== id));
   const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
   const hasItems = cart.length > 0 || sample.inCart;
+  const hasCOM = needsFabric(cart);
+  const rollsMissing = hasCOM && rtype === "Purchase Order" && fabricRolls === "";
+  const fabFee = hasCOM ? fabricFee(fabricRolls) : 0;
 
   const submit = async () => {
     if (!hasItems) return;
     if (rtype === "Quote Request" && !pricingAcked) return;
-    const orders = await loadOrders();
+    if (rollsMissing) return;
     const id = genId(rtype);
     const items = cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, modifications: i.modifications }));
     if (sample.inCart) items.push({ id: "SAM-817", name: "Material Samples", qty: 1, price: 0, modifications: "", sampleDimensions: sample.dimensions, sampleDescription: sample.description });
-    const order = { id, requestType: rtype, category, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes };
-    await saveOrders([order, ...orders]);
+    const order = { id, requestType: rtype, category, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes, ...(hasCOM && fabricRolls !== "" ? { fabricRolls: parseInt(fabricRolls, 10) } : {}) };
+    await saveOrders([order]); // adds just this order; never re-sends other orders
     // Send confirmation emails — fire and forget, don't block the UI
     fetch("/api/send-confirmation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order }),
     }).catch(err => console.error("Email send failed:", err));
-    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); setCategory("Gallery"); onSubmitted();
+    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); setCategory("Gallery"); setFabricRolls(""); onSubmitted();
   };
 
   if (done) return (
@@ -353,9 +391,15 @@ function ClientView({ onSubmitted }) {
         </div>
         {hasItems && (
           <div className="ofoot">
+            {fabFee > 0 && (
+              <div className="trow" style={{ marginBottom: 6 }}>
+                <span className="tlbl">Fabric logistics · {rollsLabel(parseInt(fabricRolls, 10))}</span>
+                <span className="tlbl" style={{ color: "#0A0A0A", fontSize: 11 }}>{fmt(fabFee)}</span>
+              </div>
+            )}
             <div className="trow">
               <span className="tlbl">Total</span>
-              <span className="tamt">{fmt(total)}</span>
+              <span className="tamt">{fmt(total + fabFee)}</span>
             </div>
             <div className="ttog">
               {["Quote Request", "Purchase Order"].map(t => (
@@ -372,6 +416,17 @@ function ClientView({ onSubmitted }) {
                 ))}
               </div>
             </div>
+            {hasCOM && (
+              <div style={{ marginBottom: 14 }}>
+                <label className="fl" style={{ marginBottom: 6 }}>Fabric Rolls (COM){rtype === "Purchase Order" ? " · Required" : ""}</label>
+                <input className="qi" type="number" min={0} placeholder="Number of rolls (0 if no fabric)" value={fabricRolls}
+                  onChange={e => setFabricRolls(e.target.value === "" ? "" : String(Math.max(0, parseInt(e.target.value, 10) || 0)))}
+                  style={rollsMissing ? { borderColor: "#C8A000", background: "#FFF8E6" } : undefined} />
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.06em", color: "#666", lineHeight: 1.6, marginTop: 6 }}>
+                  Fabric import &amp; transport, Texas → Mexico City: $130 first roll, $95 each additional. Added to your invoice.
+                </div>
+              </div>
+            )}
             <textarea className="nta" rows={2} placeholder="Timeline, project notes..." value={notes} onChange={e => setNotes(e.target.value)} />
             {rtype === "Quote Request" && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14, padding: "12px 14px", background: "#F5F4F1", border: "1px solid #DDDAD3" }}>
@@ -379,7 +434,7 @@ function ClientView({ onSubmitted }) {
                 <label htmlFor="pricing-ack" style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.08em", color: "#666", lineHeight: 1.6, cursor: "pointer" }}>I understand that prices shown are indicative of standard dimensions only and are subject to change pending review of any requested modifications.</label>
               </div>
             )}
-            <button className="sbtn" onClick={submit} style={{ opacity: (rtype === "Quote Request" && !pricingAcked) ? 0.3 : 1 }}>Submit {rtype === "Quote Request" ? "Quote Request" : "Purchase Order"} →</button>
+            <button className="sbtn" onClick={submit} style={{ opacity: ((rtype === "Quote Request" && !pricingAcked) || rollsMissing) ? 0.3 : 1 }}>Submit {rtype === "Quote Request" ? "Quote Request" : "Purchase Order"} →</button>
           </div>
         )}
       </div>
@@ -397,6 +452,10 @@ function ClientHistory() {
 
   const refresh = useCallback(async () => { const d = await loadOrders(); setOrders(d); setLoading(false); }, []);
   useEffect(() => { refresh(); }, [refresh]);
+  const changeTracking = async (orderId, change) => {
+    const tracking = await updateTracking(orderId, change);
+    if (tracking) setOrders(prev => prev.map(o => o.id === orderId ? { ...o, tracking } : o));
+  };
 
   if (loading) return <div className="noord">Loading...</div>;
   if (orders.length === 0) return (
@@ -485,13 +544,15 @@ function ClientHistory() {
                         </table>
                         <div style={{ borderTop: "1px solid #DDDAD3", marginTop: 14, paddingTop: 14, display: "flex", justifyContent: "flex-end", gap: 24, alignItems: "baseline" }}>
                           {hasPendingSample && <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: "#C8A000", letterSpacing: "0.12em", textTransform: "uppercase" }}>Sample pricing pending from 817 Hospitality</span>}
+                          {fabricFee(order.fabricRolls) > 0 && <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#666", letterSpacing: "0.06em" }}>Furniture {fmt(order.total)} + Fabric logistics ({rollsLabel(order.fabricRolls)}) {fmt(fabricFee(order.fabricRolls))}</span>}
                           <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 700, color: "#0A0A0A" }}>
-                            {hasPendingSample ? `${fmt(order.total)} + samples` : `Total: ${fmt(order.total)}`}
+                            {hasPendingSample ? `${fmt(order.total + fabricFee(order.fabricRolls))} + samples` : `Total: ${fmt(order.total + fabricFee(order.fabricRolls))}`}
                           </span>
                         </div>
-                        {["In Production", "Completed"].includes(order.status) && order.poId && (
+                        {order.requestType === "Purchase Order" && order.status !== "Cancelled" && (
                           <InvoiceActions order={order} />
                         )}
+                        <ShipmentsPanel order={order} role="client" onChange={change => changeTracking(order.id, change)} />
                         {order.notes && (
                           <div style={{ marginTop: 16 }}>
                             <div className="dslbl">Notes</div>
@@ -544,7 +605,8 @@ function InvoiceActions({ order }) {
   const hasPendingSample = order.items.some(i => i.id === "SAM-817" && (!i.price || i.price === 0));
 
   const getHtml = () => buildInvoiceHtml({
-    poId: order.poId,
+    poId: order.id, // invoice # = portal reference (e.g. PO-20261026-392); never changes
+    fabric: { rolls: order.fabricRolls, fee: fabricFee(order.fabricRolls) },
     orderDate: order.date,
     items: order.items,
     total: order.total,
@@ -563,6 +625,75 @@ function InvoiceActions({ order }) {
   return (
     <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #DDDAD3", display: "flex", gap: 8, alignItems: "center" }}>
       <button onClick={handlePreview} style={btnStyle}>Preview Invoice</button>
+    </div>
+  );
+}
+
+// Shipment tracking for fabric and samples, on every order, visible to the
+// client and admin. Either side adds lines; admin marks Delivered (manual for
+// now — automatic status from a tracking service is a later step).
+function ShipmentsPanel({ order, role, onChange }) {
+  const [form, setForm] = useState({ type: "Fabric", carrier: "UPS", number: "" });
+  const [busy, setBusy] = useState(false);
+  const lines = order.tracking || [];
+  const isAdmin = role === "admin";
+  const run = async change => { setBusy(true); try { await onChange(change); } finally { setBusy(false); } };
+  const add = () => {
+    const number = form.number.trim();
+    if (!number || busy) return;
+    const line = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), type: form.type, carrier: form.carrier, number, status: "In Transit", addedBy: role, addedAt: new Date().toISOString(), deliveredAt: null };
+    run(ls => [...ls, line]);
+    setForm(f => ({ ...f, number: "" }));
+  };
+  const setDelivered = (id, delivered) => run(ls => ls.map(l => l.id === id ? { ...l, status: delivered ? "Delivered" : "In Transit", deliveredAt: delivered ? new Date().toISOString() : null } : l));
+  const remove = id => { if (confirm("Remove this tracking line?")) run(ls => ls.filter(l => l.id !== id)); };
+
+  const mono = { fontFamily: "'IBM Plex Mono',monospace" };
+  const inp = { ...mono, fontSize: 11, border: "1px solid #C8C5BE", background: "#fff", padding: "6px 8px", outline: "none", color: "#0A0A0A" };
+  const sbtn = { ...mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", padding: "6px 10px", border: "1px solid #0A0A0A", background: "#fff", color: "#0A0A0A", cursor: "pointer" };
+  const canAdd = !busy && form.number.trim() !== "";
+
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ marginTop: 16 }}>
+      <div className="dslbl" style={{ marginBottom: 10 }}>Shipments · Fabric &amp; Samples</div>
+      {lines.length > 0 && (
+        <table className="ltbl" style={{ marginBottom: 10 }}>
+          <thead><tr><th>Type</th><th>Carrier</th><th>Tracking #</th><th>Status</th><th>Added By</th><th></th></tr></thead>
+          <tbody>
+            {lines.map(l => {
+              const url = trackingUrl(l.carrier, l.number);
+              const delivered = l.status === "Delivered";
+              return (
+                <tr key={l.id}>
+                  <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{l.type}</td>
+                  <td style={{ ...mono, fontSize: 11 }}>{l.carrier}</td>
+                  <td style={{ ...mono, fontSize: 11 }}>{url ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "#0A0A0A" }}>{l.number} ↗</a> : l.number}</td>
+                  <td>
+                    <span style={{ ...mono, display: "inline-block", fontSize: 8, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, padding: "3px 8px", color: delivered ? "#004D1A" : "#7A5500", background: delivered ? "#E6F5EC" : "#FFF8E6", border: `1px solid ${delivered ? "#009933" : "#C8A000"}` }}>
+                      {delivered ? `Delivered ${l.deliveredAt ? fmtDate(l.deliveredAt) : ""}` : "In Transit"}
+                    </span>
+                  </td>
+                  <td style={{ ...mono, fontSize: 10, color: "#888", textTransform: "uppercase" }}>{l.addedBy === "admin" ? "817" : "TFP"}</td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    {isAdmin && <button disabled={busy} onClick={() => setDelivered(l.id, !delivered)} style={sbtn}>{delivered ? "Undo Delivered" : "Mark Delivered"}</button>}
+                    {(isAdmin || (l.addedBy === role && !delivered)) && <button disabled={busy} onClick={() => remove(l.id)} style={{ marginLeft: 8, border: "none", background: "none", color: "#C8A000", cursor: "pointer", fontSize: 13 }}>×</button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} style={inp}>
+          {["Fabric", "Samples"].map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select value={form.carrier} onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))} style={inp}>
+          {CARRIERS.map(cr => <option key={cr} value={cr}>{cr}</option>)}
+        </select>
+        <input placeholder="Tracking number" value={form.number} onChange={e => setForm(f => ({ ...f, number: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") add(); }} style={{ ...inp, flex: "1 1 180px", minWidth: 160 }} />
+        <button onClick={add} disabled={!canAdd} style={{ ...sbtn, background: "#0A0A0A", color: "#fff", opacity: canAdd ? 1 : 0.35 }}>+ Add Tracking</button>
+      </div>
     </div>
   );
 }
@@ -890,6 +1021,7 @@ function VendorPOSubCard({ title, vendor, results, mode, overrides, customLines,
 }
 
 function VendorPOPanel({ order, onSave }) {
+  const [open, setOpen] = useState(false);
   if (order.status !== "In Production") return null;
   const vp = order.vendorPOs || {};
   const crateState = { ...defaultPOState(), ...(vp.crates || {}) };
@@ -920,8 +1052,15 @@ function VendorPOPanel({ order, onSave }) {
 
   return (
     <div style={{ background: "#F5F4F1", borderTop: "1px solid #DDDAD3", padding: "18px 32px" }}>
-      <div className="dslbl" style={{ marginBottom: 14 }}>Vendor POs</div>
-      {!order.poId ? (
+      <div onClick={e => { e.stopPropagation(); setOpen(o => !o); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: open ? 14 : 0 }}>
+        <div className="dslbl" style={{ marginBottom: 0 }}>{open ? "▾" : "▸"} Vendor POs</div>
+        {!open && (
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "#666" }}>
+            {order.poId ? `Crates: ${crateState.status} · Covers: ${coverState.status}` : "817 PO ID not set"}
+          </div>
+        )}
+      </div>
+      {open && (!order.poId ? (
         <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#AAA", letterSpacing: "0.08em", textTransform: "uppercase" }}>
           Set the 817 PO ID first.
         </div>
@@ -952,7 +1091,7 @@ function VendorPOPanel({ order, onSave }) {
             onEditCustom={(itemIndex, patch) => save({ covers: { ...coverState, customLines: coverState.customLines.map(c => c.itemIndex === itemIndex ? { ...c, ...patch } : c) } })}
           />
         </>
-      )}
+      ))}
     </div>
   );
 }
@@ -970,7 +1109,7 @@ function AdminView() {
 
   const updStatus = async (id, s) => {
     const u = orders.map(o => o.id === id ? { ...o, status: s } : o);
-    setOrders(u); await saveOrders(u);
+    setOrders(u); await patchOrder(id, { status: s });
     if (s === "Quote Sent") {
       const order = u.find(o => o.id === id);
       if (order) fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order }) }).catch(() => {});
@@ -984,13 +1123,18 @@ function AdminView() {
       const total = items.reduce((s, it) => s + (it.id === "SAM-817" ? parsed : it.price * it.qty), 0);
       return { ...o, items, total };
     });
-    setOrders(u); await saveOrders(u);
-    const updatedOrder = u.find(o => o.id === orderId);
+    const changed = u.find(o => o.id === orderId);
+    setOrders(u); await patchOrder(orderId, { items: changed.items, total: changed.total });
+    const updatedOrder = changed;
     if (updatedOrder) fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: updatedOrder }) }).catch(() => {});
   };
   const updProjectInfo = async (orderId, field, value) => {
     const u = orders.map(o => o.id === orderId ? { ...o, [field]: value } : o);
-    setOrders(u); await saveOrders(u);
+    setOrders(u); await patchOrder(orderId, { [field]: value });
+  };
+  const changeTracking = async (orderId, change) => {
+    const tracking = await updateTracking(orderId, change);
+    if (tracking) setOrders(prev => prev.map(o => o.id === orderId ? { ...o, tracking } : o));
   };
   const del = async id => {
     if (!confirm("Delete this request?")) return;
@@ -1137,7 +1281,24 @@ function AdminView() {
                               ))}
                             </div>
                           </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 0 }} />
+                          {(needsFabric(order.items) || order.fabricRolls != null) ? (
+                            <div>
+                              <div className="dslbl" style={{ marginBottom: 10 }}>Fabric Rolls (COM)</div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                <input
+                                  type="number" min={0} placeholder="—"
+                                  key={"fr-" + order.id + "-" + (order.fabricRolls ?? "")}
+                                  defaultValue={order.fabricRolls ?? ""}
+                                  onBlur={e => { const v = e.target.value === "" ? null : Math.max(0, parseInt(e.target.value, 10) || 0); if (v !== (order.fabricRolls ?? null)) updProjectInfo(order.id, "fabricRolls", v); }}
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: 90, letterSpacing: "0.04em" }}
+                                />
+                                <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: order.fabricRolls == null ? "#C8A000" : "#0A0A0A" }}>
+                                  {order.fabricRolls == null ? "Not confirmed" : `Fee ${fmt(fabricFee(order.fabricRolls))}`}
+                                </span>
+                              </div>
+                            </div>
+                          ) : <div />}
                         </div>
                         {["Quote Sent", "In Production", "Completed"].includes(order.status) && (
                           <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
@@ -1175,9 +1336,12 @@ function AdminView() {
                             </div>
                           </div>
                         )}
+                        <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "2px 32px 18px" }}>
+                          <ShipmentsPanel order={order} role="admin" onChange={change => changeTracking(order.id, change)} />
+                        </div>
                         <VendorPOPanel order={order} onSave={(vp) => updProjectInfo(order.id, "vendorPOs", vp)} />
                         <div className="dftr">
-                          <div className="dttl">Order Total: {fmt(order.total)}</div>
+                          <div className="dttl">Order Total: {fmt(order.total)}{fabricFee(order.fabricRolls) > 0 ? ` + fabric logistics ${fmt(fabricFee(order.fabricRolls))}` : ""}</div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                             {order.requestType === "Quote Request" && order.status !== "Cancelled" && order.status !== "Completed" && (
                               <button
@@ -1188,8 +1352,8 @@ function AdminView() {
                                   const current = orders.find(o => o.id === order.id);
                                   const updated = orders.map(o => o.id === order.id ? { ...o, status: "Quote Sent" } : o);
                                   setOrders(updated);
-                                  await saveOrders(updated);
                                   const final = updated.find(o => o.id === order.id);
+                                  await patchOrder(order.id, { status: "Quote Sent", items: final.items, total: final.total });
                                   const emailRes = await fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) });
                                   if (emailRes.ok) {
                                     alert("Quote confirmed and email sent to The Future Perfect.");

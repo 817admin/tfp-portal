@@ -73,8 +73,19 @@ export function buildInvoiceLineItems(items) {
 // Branded standalone HTML invoice, following the same 817 letterhead layout
 // as the vendor PO document. Suitable for opening in a new tab (preview /
 // print-to-PDF) or downloading.
-export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSample }) {
+export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSample, fabric }) {
   const lineItems = buildInvoiceLineItems(items);
+  // Fabric import & transport fee, computed by the portal ($130 first roll,
+  // $95 each additional). Shown as its own line and added to the total.
+  const fabricFee = fabric && Number(fabric.fee) > 0 ? Number(fabric.fee) : 0;
+  const fabricRow = fabricFee > 0 ? `
+      <tr>
+        <td class="mono">FAB-LOG</td>
+        <td class="name">Fabric import &amp; transport, Texas → Mexico City<br><span style="font-size:9px;letter-spacing:0.04em;color:#8A8A85;text-transform:none">$130 first roll, $95 each additional</span></td>
+        <td class="num">${Number(fabric.rolls)}</td>
+        <td class="num">—</td>
+        <td class="num strong">$${fmt(fabricFee)}</td>
+      </tr>` : "";
   const rows = lineItems.map((it) => `
       <tr>
         <td class="mono">${escapeHtml(it.id)}</td>
@@ -187,11 +198,11 @@ export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSamp
           <th>Qty</th><th>Unit Price</th><th>Total</th>
         </tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows}${fabricRow}</tbody>
     </table>
 
     <div class="totals">
-      <div class="row grand"><span>Total</span><span>$${fmt(total)} USD</span></div>
+      <div class="row grand"><span>Total</span><span>$${fmt(total + fabricFee)} USD</span></div>
     </div>
     ${hasPendingSample ? '<div class="pending-note">+ Sample pricing pending from 817 Hospitality</div>' : ""}
 
@@ -206,8 +217,9 @@ export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSamp
 
 // Plain-text version, kept for parity with the vendor document module even
 // though the client invoice is not sent via mailto today.
-export function buildInvoicePlainText({ poId, items, total, hasPendingSample }) {
+export function buildInvoicePlainText({ poId, items, total, hasPendingSample, fabric }) {
   const lineItems = buildInvoiceLineItems(items);
+  const fabricFee = fabric && Number(fabric.fee) > 0 ? Number(fabric.fee) : 0;
   const pad = (s, n) => String(s).slice(0, n).padEnd(n, " ");
   const lines = lineItems.map((it) =>
     `${pad(it.id, 10)}${pad(it.name, 28)}${pad(it.qty === null ? "-" : it.qty, 6)}${pad(it.pending ? "Pending" : "$" + fmt(it.unitPrice), 14)}${it.pending ? "TBD" : "$" + fmt(it.lineTotal)}`
@@ -220,8 +232,9 @@ export function buildInvoicePlainText({ poId, items, total, hasPendingSample }) 
     `${pad("ID", 10)}${pad("PIECE", 28)}${pad("QTY", 6)}${pad("UNIT PRICE", 14)}TOTAL`,
     "-".repeat(76),
     ...lines,
+    ...(fabricFee > 0 ? [`${pad("FAB-LOG", 10)}${pad("Fabric import TX-CDMX", 28)}${pad(fabric.rolls, 6)}${pad("-", 14)}$${fmt(fabricFee)}`] : []),
     "-".repeat(76),
-    `Total: $${fmt(total)} USD${hasPendingSample ? " + samples TBD" : ""}`,
+    `Total: $${fmt(total + fabricFee)} USD${hasPendingSample ? " + samples TBD" : ""}`,
     "",
     ...CLIENT_TERMS.map((t, i) => `${i + 1}. ${t.title}: ${t.body}`),
   ].join("\n");

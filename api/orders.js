@@ -44,16 +44,22 @@ export default async function handler(req, res) {
       // CURRENT stored list, so a browser holding an old copy can't erase
       // orders it hasn't seen. A plain array (older cached page) is
       // treated as a merge too.
-      let op, incoming, deleteId;
+      let op, incoming, deleteId, patchId, fields;
       if (Array.isArray(body)) { op = "merge"; incoming = body; }
       else if (body && body.op === "merge" && Array.isArray(body.orders)) { op = "merge"; incoming = body.orders; }
       else if (body && body.op === "delete" && body.id) { op = "delete"; deleteId = body.id; }
-      else return res.status(400).json({ error: "Expected {op:'merge',orders:[...]} or {op:'delete',id}" });
+      // Field-level update of ONE order: only the fields sent are changed,
+      // everything else on that order stays as currently stored.
+      else if (body && body.op === "patch" && body.id && body.fields && typeof body.fields === "object" && !Array.isArray(body.fields)) { op = "patch"; patchId = body.id; fields = body.fields; delete fields.id; }
+      else return res.status(400).json({ error: "Expected {op:'merge',orders:[...]}, {op:'delete',id} or {op:'patch',id,fields}" });
 
       const current = await readOrders(BASE_URL, auth); // throws -> nothing is written
       let next;
       if (op === "delete") {
         next = current.filter(o => o.id !== deleteId);
+      } else if (op === "patch") {
+        if (!current.some(o => o.id === patchId)) return res.status(404).json({ error: "Order not found" });
+        next = current.map(o => o.id === patchId ? { ...o, ...fields } : o);
       } else {
         const byId = new Map(incoming.filter(o => o && o.id).map(o => [o.id, o]));
         const existingIds = new Set(current.map(o => o.id));
