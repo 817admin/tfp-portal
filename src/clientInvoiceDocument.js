@@ -73,7 +73,19 @@ export function buildInvoiceLineItems(items) {
 // Branded standalone HTML invoice, following the same 817 letterhead layout
 // as the vendor PO document. Suitable for opening in a new tab (preview /
 // print-to-PDF) or downloading.
-export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSample, fabric }) {
+export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSample, fabric, title = "Invoice", ids = null }) {
+  // Project IDs (817 + TFP) print once the order is approved.
+  const idsHtml = ids && (ids.p817 || ids.tfp) ? `
+    <div class="meta-grid">${ids.p817 ? `
+      <div>
+        <div class="lbl">817 Project ID</div>
+        <div class="val mono">${escapeHtml(ids.p817)}</div>
+      </div>` : ""}${ids.tfp ? `
+      <div>
+        <div class="lbl">TFP PO #</div>
+        <div class="val mono">${escapeHtml(ids.tfp)}</div>
+      </div>` : ""}
+    </div>` : "";
   const lineItems = buildInvoiceLineItems(items);
   // Fabric import & transport fee, computed by the portal ($130 first roll,
   // $95 each additional). Shown as its own line and added to the total.
@@ -102,7 +114,7 @@ export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSamp
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Invoice ${escapeHtml(poId || "")}</title>
+<title>${escapeHtml(title)} ${escapeHtml(poId || "")}</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; }
@@ -178,7 +190,7 @@ export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSamp
 
     <div class="meta-grid">
       <div>
-        <div class="lbl">Invoice</div>
+        <div class="lbl">${escapeHtml(title)}</div>
         <div class="val"><span class="po-badge">${escapeHtml(poId || "—")}</span></div>
       </div>
       <div>
@@ -190,6 +202,7 @@ export function buildInvoiceHtml({ poId, orderDate, items, total, hasPendingSamp
         <div class="val addr">${escapeHtml(BILL_TO.name)}<br>${escapeHtml(BILL_TO.address)}</div>
       </div>
     </div>
+${idsHtml}
 
     <table>
       <thead>
@@ -238,4 +251,76 @@ export function buildInvoicePlainText({ poId, items, total, hasPendingSample, fa
     "",
     ...CLIENT_TERMS.map((t, i) => `${i + 1}. ${t.title}: ${t.body}`),
   ].join("\n");
+}
+
+
+// ---------------------------------------------------------------------------
+// Shared order logic — used by the portal screens AND the email server, so the
+// invoice TFP previews and the PDF attached to emails are always identical.
+// ---------------------------------------------------------------------------
+
+// Fabric import & transport, Texas → Mexico City (standardized for TFP).
+// First roll $130, each additional roll $95. Example: 3 rolls = $320.
+export const FABRIC_FIRST_ROLL = 130;
+export const FABRIC_ADDL_ROLL = 95;
+export function fabricFee(rolls) {
+  const n = Math.max(0, parseInt(rolls, 10) || 0);
+  return n === 0 ? 0 : FABRIC_FIRST_ROLL + FABRIC_ADDL_ROLL * (n - 1);
+}
+
+// Approved = entered as a Purchase Order, or moved into production.
+export function isApproved(order) {
+  return ["In Production", "Completed"].includes(order.status) || order.requestType === "Purchase Order";
+}
+
+// 817 project ID and TFP PO number. Uses the dedicated fields when set;
+// otherwise reads them out of the older free-text "817 PO ID" box, e.g.
+// "817 P-1046 // TFP PO-00042303" → P-1046 and PO-00042303.
+export function orderIds(order) {
+  const raw = String(order.poId || "");
+  let p817 = order.projectId817;
+  let tfp = order.tfpPoNumber;
+  if (p817 == null) { const m = raw.match(/\bPO?[\s-]*(\d{4})\b/i); p817 = m ? `P-${m[1]}` : ""; }
+  if (tfp == null) { const ms = raw.match(/\d{8}/g); tfp = ms ? ms.map((n) => `PO-${n}`).join(" + ") : ""; }
+  return { p817: String(p817 || "").trim(), tfp: String(tfp || "").trim() };
+}
+
+// Standard lead time: 16–18 weeks from the client payment date (YYYY-MM-DD).
+export function deliveryWindow(paymentDate) {
+  if (!paymentDate) return null;
+  const d = new Date(paymentDate + "T12:00:00");
+  if (isNaN(d)) return null;
+  const add = (weeks) => { const x = new Date(d); x.setDate(x.getDate() + weeks * 7); return x; };
+  return { start: add(16), end: add(18) };
+}
+export function fmtWindow(w) {
+  if (!w) return "";
+  const md = (x) => x.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const y = (x) => x.getFullYear();
+  return y(w.start) === y(w.end)
+    ? `${md(w.start)} – ${md(w.end)}, ${y(w.end)}`
+    : `${md(w.start)}, ${y(w.start)} – ${md(w.end)}, ${y(w.end)}`;
+}
+
+// The one document for an order: "Pro Forma Invoice" until approved, then
+// "Invoice" with both project IDs.
+export function invoiceForOrder(order) {
+  const approved = isApproved(order);
+  const title = approved ? "Invoice" : "Pro Forma Invoice";
+  const ids = approved ? orderIds(order) : null;
+  const items = order.items || [];
+  const hasPendingSample = items.some((i) => i.id === "SAM-817" && (!i.price || i.price === 0));
+  const html = buildInvoiceHtml({
+    poId: order.id, // number = portal reference; never changes
+    orderDate: order.date,
+    items,
+    total: order.total,
+    hasPendingSample,
+    fabric: { rolls: order.fabricRolls, fee: fabricFee(order.fabricRolls) },
+    title,
+    ids,
+  });
+  const idPart = ids && ids.p817 ? ` ${ids.p817}` : "";
+  const filename = `817 Hospitality ${title} ${order.id}${idPart}.pdf`.replace(/[\/\\:*?"<>|]/g, "-");
+  return { html, title, filename, approved, ids };
 }

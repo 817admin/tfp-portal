@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { matchOrderItems, crateDisplayRows, calcPOTotals, defaultPOState, advanceStatusPatch, revertStatusPatch, nextStatus, prevStatus, poNumberPreview, STATUS_COLORS } from "./vendorPOMatcher";
 import { buildPOLineItems, buildPOHtml, buildPOPlainText, buildMailtoUrl } from "./vendorPODocument";
 import { VENDOR_INFO } from "./vendorPOCatalog";
-import { buildInvoiceHtml } from "./clientInvoiceDocument";
+import { invoiceForOrder, fabricFee, orderIds, isApproved, deliveryWindow, fmtWindow } from "./clientInvoiceDocument";
 
 const CATALOG = [
   { id: "TB-001", name: "Pointue Side Table", category: "Tables", price: 890, description: 'Materials: lacquer / stainless steel | Finish: high gloss lacquer solid color / polished stainless steel | Dimensions: 13" W × 13" D × 22" H' },
@@ -39,11 +39,32 @@ const effectiveType = order => ["In Production", "Completed"].includes(order.sta
 // Fabric import & transport, Texas → Mexico City (standardized for TFP).
 // First roll $130, each additional roll $95. Example: 3 rolls = $130 + $95 + $95 = $320.
 // Kept separate from order.total so dashboards and margins stay furniture-only.
-const FABRIC_FIRST_ROLL = 130;
-const FABRIC_ADDL_ROLL = 95;
 const COM_IDS = CATALOG.filter(i => /Fabric:\s*COM/.test(i.description)).map(i => i.id);
 const needsFabric = items => (items || []).some(i => COM_IDS.includes(i.id));
-const fabricFee = rolls => { const n = Math.max(0, parseInt(rolls, 10) || 0); return n === 0 ? 0 : FABRIC_FIRST_ROLL + FABRIC_ADDL_ROLL * (n - 1); };
+// (fabricFee and the invoice logic live in clientInvoiceDocument.js, shared with the email server)
+
+// Order total: pieces at price × qty; the sample line counts its price once.
+const orderTotal = items => (items || []).reduce((s, x) => s + (x.id === "SAM-817" ? (parseFloat(x.price) || 0) : (parseFloat(x.price) || 0) * (parseInt(x.qty, 10) || 0)), 0);
+
+// Change log ("footnotes") for edits 817 makes to a client order.
+// Compares the stored order with the edited one and describes each change.
+function describeChanges(before, after) {
+  const out = [];
+  const money = (x, sample) => (sample && !(Number(x) > 0)) ? "TBD" : fmt(Number(x) || 0);
+  const bi = new Map((before.items || []).map(x => [x.id, x]));
+  const ai = new Map((after.items || []).map(x => [x.id, x]));
+  for (const [id, b] of bi) if (!ai.has(id)) out.push({ itemId: null, text: `Removed ${id} ${b.name}${id === "SAM-817" ? "" : ` × ${b.qty}`}` });
+  for (const [id, a] of ai) {
+    const b = bi.get(id); const s = id === "SAM-817";
+    if (!b) { out.push({ itemId: id, text: `Added ${id} ${a.name}${s ? "" : ` × ${a.qty}`} at ${money(a.price, s)}` }); continue; }
+    if (!s && Number(b.qty) !== Number(a.qty)) out.push({ itemId: id, text: `${id} ${a.name}: quantity ${b.qty} → ${a.qty}` });
+    if (Number(b.price || 0) !== Number(a.price || 0)) out.push({ itemId: id, text: `${id} ${a.name}: unit price ${money(b.price, s)} → ${money(a.price, s)}` });
+    if ((b.modifications || "").trim() !== (a.modifications || "").trim()) out.push({ itemId: id, text: `${id} ${a.name}: modifications changed to "${(a.modifications || "").trim() || "none"}"` });
+  }
+  if (after.notes !== undefined && (before.notes || "").trim() !== (after.notes || "").trim()) out.push({ itemId: null, text: `Order notes changed to "${(after.notes || "").trim() || "none"}"` });
+  if (Number(before.total) !== Number(after.total)) out.push({ itemId: null, text: `Order total ${fmt(Number(before.total) || 0)} → ${fmt(Number(after.total) || 0)}` });
+  return out;
+}
 const rollsLabel = n => `${n} roll${Number(n) === 1 ? "" : "s"}`;
 
 // Shipment tracking (fabric and samples): carrier → public tracking page.
@@ -228,7 +249,8 @@ body,#root{background:#F5F4F1;min-height:100vh;}
 .noord{text-align:center;padding:80px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#CCC;}
 `;
 
-function ClientView({ onSubmitted }) {
+function ClientView({ onSubmitted, isAdmin }) {
+  const [emailTFP, setEmailTFP] = useState(false); // only used when 817 enters the order
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState("All");
@@ -265,15 +287,15 @@ function ClientView({ onSubmitted }) {
     const id = genId(rtype);
     const items = cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, modifications: i.modifications }));
     if (sample.inCart) items.push({ id: "SAM-817", name: "Material Samples", qty: 1, price: 0, modifications: "", sampleDimensions: sample.dimensions, sampleDescription: sample.description });
-    const order = { id, requestType: rtype, category, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes, ...(hasCOM && fabricRolls !== "" ? { fabricRolls: parseInt(fabricRolls, 10) } : {}) };
+    const order = { id, requestType: rtype, category, status: "Requested", date: new Date().toISOString(), client: "The Future Perfect", items, total, notes, ...(hasCOM && fabricRolls !== "" ? { fabricRolls: parseInt(fabricRolls, 10) } : {}), enteredBy: isAdmin ? "817" : "client" };
     await saveOrders([order]); // adds just this order; never re-sends other orders
     // Send confirmation emails — fire and forget, don't block the UI
     fetch("/api/send-confirmation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order }),
+      body: JSON.stringify({ order, notifyClient: isAdmin ? emailTFP : true }),
     }).catch(err => console.error("Email send failed:", err));
-    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); setCategory("Gallery"); setFabricRolls(""); onSubmitted();
+    setLastId(id); setDone(true); setCart([]); setNotes(""); setSample({ inCart: false, dimensions: "", description: "" }); setPricingAcked(false); setCategory("Gallery"); setFabricRolls(""); setEmailTFP(false); onSubmitted();
   };
 
   if (done) return (
@@ -434,6 +456,12 @@ function ClientView({ onSubmitted }) {
                 <label htmlFor="pricing-ack" style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.08em", color: "#666", lineHeight: 1.6, cursor: "pointer" }}>I understand that prices shown are indicative of standard dimensions only and are subject to change pending review of any requested modifications.</label>
               </div>
             )}
+            {isAdmin && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14, padding: "12px 14px", background: "#FFF8E6", border: "1px solid #C8A000" }}>
+                <input type="checkbox" id="email-tfp" checked={emailTFP} onChange={e => setEmailTFP(e.target.checked)} style={{ marginTop: 2, cursor: "pointer", accentColor: "#0A0A0A", flexShrink: 0 }} />
+                <label htmlFor="email-tfp" style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.08em", color: "#7A5500", lineHeight: 1.6, cursor: "pointer" }}>Entering as 817 — email TFP the confirmation and PDF. Leave unticked to email only you and Eddy.</label>
+              </div>
+            )}
             <button className="sbtn" onClick={submit} style={{ opacity: ((rtype === "Quote Request" && !pricingAcked) || rollsMissing) ? 0.3 : 1 }}>Submit {rtype === "Quote Request" ? "Quote Request" : "Purchase Order"} →</button>
           </div>
         )}
@@ -516,6 +544,9 @@ function ClientHistory() {
                     <span style={{ display: "inline-block", fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", fontWeight: 700, padding: "3px 10px", color: ss.color, background: ss.bg, border: `1px solid ${ss.border}` }}>
                       {order.status}
                     </span>
+                    {deliveryWindow(order.paymentDate) && (
+                      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.06em", color: "#666", marginTop: 5 }}>Est. delivery {fmtWindow(deliveryWindow(order.paymentDate))}</div>
+                    )}
                   </td>
                   <td className="ecell">{isOpen ? "▲" : "▼"}</td>
                 </tr>
@@ -530,7 +561,7 @@ function ClientHistory() {
                             {order.items.map((it, i) => (
                               <tr key={i}>
                                 <td className="lid">{it.id}</td>
-                                <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}</td>
+                                <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}<FootRefs order={order} itemId={it.id} /></td>
                                 <td>{it.id === "SAM-817" ? "—" : it.qty}</td>
                                 <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
                                   {it.id === "SAM-817" ? (it.price > 0 ? fmt(it.price) : <span style={{ color: "#C8A000", fontSize: 10, letterSpacing: "0.08em" }}>Pending pricing</span>) : fmt(it.price)}
@@ -549,7 +580,8 @@ function ClientHistory() {
                             {hasPendingSample ? `${fmt(order.total + fabricFee(order.fabricRolls))} + samples` : `Total: ${fmt(order.total + fabricFee(order.fabricRolls))}`}
                           </span>
                         </div>
-                        {order.requestType === "Purchase Order" && order.status !== "Cancelled" && (
+                        <ChangeLog order={order} />
+                        {order.status !== "Cancelled" && (
                           <InvoiceActions order={order} />
                         )}
                         <ShipmentsPanel order={order} role="client" onChange={change => changeTracking(order.id, change)} />
@@ -559,30 +591,30 @@ function ClientHistory() {
                             <div className="nblk">{order.notes}</div>
                           </div>
                         )}
-                        {(order.approvalDate || order.leadTime || order.poId) && (
-                          <div style={{ marginTop: 16, background: "#0A0A0A", padding: "16px 20px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
-                            {order.approvalDate && (
-                              <div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>Approval Date</div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>
-                                  {new Date(order.approvalDate + "T12:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                        {(() => {
+                          const ids = orderIds(order);
+                          const win = deliveryWindow(order.paymentDate);
+                          const longDate = d => new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+                          const cells = [
+                            order.approvalDate && ["Approval Date", longDate(order.approvalDate)],
+                            order.paymentDate && ["Payment Received", longDate(order.paymentDate)],
+                            win && ["Est. Delivery (16–18 wks)", fmtWindow(win)],
+                            order.leadTime && ["Estimated Lead Time", order.leadTime],
+                            isApproved(order) && ids.p817 && ["817 Project ID", ids.p817],
+                            isApproved(order) && ids.tfp && ["TFP PO #", ids.tfp],
+                          ].filter(Boolean);
+                          if (!cells.length) return null;
+                          return (
+                            <div style={{ marginTop: 16, background: "#0A0A0A", padding: "16px 20px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
+                              {cells.map(([l, v]) => (
+                                <div key={l}>
+                                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>{l}</div>
+                                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>{v}</div>
                                 </div>
-                              </div>
-                            )}
-                            {order.leadTime && (
-                              <div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>Estimated Lead Time</div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>{order.leadTime}</div>
-                              </div>
-                            )}
-                            {order.poId && (
-                              <div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, letterSpacing: "0.22em", textTransform: "uppercase", color: "#666", marginBottom: 5, fontWeight: 600 }}>817 PO ID</div>
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: "#fff", letterSpacing: "0.04em" }}>{order.poId}</div>
-                              </div>
-                            )}
-                          </div>
-                        )}
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </td>
                   </tr>
@@ -601,30 +633,110 @@ function ClientHistory() {
 // reached "In Production" (matches the existing confirmation-email trigger)
 // and stays available through "Completed" so the client doesn't lose access
 // to their own invoice once the order finishes.
-function InvoiceActions({ order }) {
-  const hasPendingSample = order.items.some(i => i.id === "SAM-817" && (!i.price || i.price === 0));
-
-  const getHtml = () => buildInvoiceHtml({
-    poId: order.id, // invoice # = portal reference (e.g. PO-20261026-392); never changes
-    fabric: { rolls: order.fabricRolls, fee: fabricFee(order.fabricRolls) },
-    orderDate: order.date,
-    items: order.items,
-    total: order.total,
-    hasPendingSample,
-  });
-
-  const handlePreview = () => {
-    const blob = new Blob([getHtml()], { type: "text/html" });
+function InvoiceActions({ order, compact }) {
+  const inv = invoiceForOrder(order);
+  const handlePreview = e => {
+    if (e) e.stopPropagation();
+    const blob = new Blob([invoiceForOrder(order).html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank");
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
-
   const btnStyle = { fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", padding: "7px 12px", border: "1px solid #0A0A0A", cursor: "pointer", background: "#0A0A0A", color: "#fff" };
-
+  const button = <button onClick={handlePreview} style={btnStyle}>Preview {inv.title}</button>;
+  if (compact) return button;
   return (
-    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #DDDAD3", display: "flex", gap: 8, alignItems: "center" }}>
-      <button onClick={handlePreview} style={btnStyle}>Preview Invoice</button>
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #DDDAD3", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      {button}
+      {!inv.approved && <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.06em", color: "#888" }}>Becomes the final invoice, with project IDs, once approved.</span>}
+    </div>
+  );
+}
+
+// Superscript footnote numbers next to a piece that 817 changed.
+function FootRefs({ order, itemId }) {
+  const refs = (order.changeLog || []).map((e, i) => (e.itemId === itemId ? i + 1 : null)).filter(Boolean);
+  if (!refs.length) return null;
+  return <sup style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: "#C8A000", marginLeft: 3 }}>{refs.join(",")}</sup>;
+}
+
+// Numbered list of every change 817 made to an order (client + admin views).
+function ChangeLog({ order }) {
+  const log = order.changeLog || [];
+  if (!log.length) return null;
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div className="dslbl">Changes by 817 Hospitality</div>
+      <ol style={{ margin: "8px 0 0", paddingLeft: 20, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#555", lineHeight: 1.8, letterSpacing: "0.02em" }}>
+        {log.map((e, i) => <li key={i}><span style={{ color: "#999" }}>{fmtDate(e.at)}</span> — {e.text}</li>)}
+      </ol>
+    </div>
+  );
+}
+
+// Admin editor for a client order: quantities, unit prices, pieces,
+// modifications and notes. Saving logs every change as a footnote.
+function OrderEditor({ order, onSave, onCancel }) {
+  const [items, setItems] = useState(() => (order.items || []).map(it => ({ ...it, modifications: it.modifications || "" })));
+  const [notes, setNotes] = useState(order.notes || "");
+  const [addId, setAddId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const upd = (i, f, v) => setItems(xs => xs.map((x, j) => (j === i ? { ...x, [f]: v } : x)));
+  const add = () => {
+    const cat = CATALOG.find(x => x.id === addId);
+    if (!cat) return;
+    if (items.some(x => x.id === cat.id)) { alert(`${cat.id} is already on this order — change its quantity instead.`); return; }
+    const pieces = items.filter(x => x.id !== "SAM-817"), sample = items.filter(x => x.id === "SAM-817");
+    setItems([...pieces, { id: cat.id, name: cat.name, qty: 1, price: cat.price, modifications: "" }, ...sample]);
+    setAddId("");
+  };
+  const clean = () => items.map(x => ({ ...x, qty: x.id === "SAM-817" ? 1 : Math.max(1, parseInt(x.qty, 10) || 1), price: Math.max(0, parseFloat(x.price) || 0), modifications: (x.modifications || "").trim() }));
+  const save = async () => {
+    if (!items.length) { alert("An order needs at least one piece."); return; }
+    setSaving(true);
+    try { await onSave({ items: clean(), notes: notes.trim() }); } finally { setSaving(false); }
+  };
+  const mono = { fontFamily: "'IBM Plex Mono',monospace" };
+  const inp = { ...mono, fontSize: 11, border: "1px solid #C8C5BE", background: "#fff", padding: "5px 7px", outline: "none", color: "#0A0A0A" };
+  const btn = { ...mono, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", padding: "8px 16px", cursor: "pointer", fontWeight: 700 };
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ padding: "24px 32px", background: "#FFF9EE", borderBottom: "1px solid #DDDAD3" }}>
+      <div className="dslbl" style={{ marginBottom: 10 }}>Edit Order — every change is logged for TFP</div>
+      <table className="ltbl">
+        <thead><tr><th>ID</th><th>Piece</th><th>Qty</th><th>Unit Price</th><th>Modifications</th><th style={{ textAlign: "right" }}>Subtotal</th><th></th></tr></thead>
+        <tbody>
+          {items.map((it, i) => {
+            const s = it.id === "SAM-817";
+            return (
+              <tr key={it.id}>
+                <td className="lid">{it.id}</td>
+                <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500, color: "#0A0A0A" }}>{it.name}</td>
+                <td>{s ? "—" : <input type="number" min={1} value={it.qty} onChange={e => upd(i, "qty", e.target.value)} style={{ ...inp, width: 60 }} />}</td>
+                <td><input type="number" min={0} value={it.price} onChange={e => upd(i, "price", e.target.value)} style={{ ...inp, width: 90 }} /></td>
+                <td>{s ? <span style={{ ...mono, fontSize: 10, color: "#888" }}>Sample request</span> : <input type="text" value={it.modifications} placeholder="—" onChange={e => upd(i, "modifications", e.target.value)} style={{ ...inp, width: "100%", minWidth: 160 }} />}</td>
+                <td style={{ ...mono, fontSize: 11, fontWeight: 600, textAlign: "right" }}>{fmt(s ? (parseFloat(it.price) || 0) : (parseFloat(it.price) || 0) * (parseInt(it.qty, 10) || 0))}</td>
+                <td style={{ textAlign: "right" }}><button onClick={() => setItems(xs => xs.filter((_, j) => j !== i))} title="Remove piece" style={{ border: "none", background: "none", color: "#C8A000", cursor: "pointer", fontSize: 14 }}>×</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+        <select value={addId} onChange={e => setAddId(e.target.value)} style={inp}>
+          <option value="">Add a piece…</option>
+          {CATALOG.filter(c => !items.some(x => x.id === c.id)).map(c => <option key={c.id} value={c.id}>{c.id} — {c.name} ({fmt(c.price)})</option>)}
+        </select>
+        <button onClick={add} disabled={!addId} style={{ ...btn, background: "#fff", color: "#0A0A0A", border: "1px solid #0A0A0A", opacity: addId ? 1 : 0.4 }}>+ Add</button>
+        <div style={{ marginLeft: "auto", ...mono, fontSize: 12, fontWeight: 700 }}>New total: {fmt(orderTotal(items))}</div>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <div className="dslbl" style={{ marginBottom: 6 }}>Order Notes</div>
+        <textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} style={{ ...inp, width: "100%", resize: "vertical", lineHeight: 1.5 }} />
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+        <button onClick={onCancel} disabled={saving} style={{ ...btn, background: "#fff", color: "#888", border: "1px solid #C8C5BE" }}>Cancel</button>
+        <button onClick={save} disabled={saving} style={{ ...btn, background: "#0A0A0A", color: "#fff", border: "none", opacity: saving ? 0.5 : 1 }}>{saving ? "Saving…" : "Save Changes"}</button>
+      </div>
     </div>
   );
 }
@@ -1024,6 +1136,7 @@ function VendorPOPanel({ order, onSave }) {
   const [open, setOpen] = useState(false);
   if (order.status !== "In Production") return null;
   const vp = order.vendorPOs || {};
+  const vpId = orderIds(order).p817 || order.poId; // vendor PO numbers build on the 817 project ID
   const crateState = { ...defaultPOState(), ...(vp.crates || {}) };
   const coverState = { ...defaultPOState(), ...(vp.covers || {}) };
   const { crates, covers } = matchOrderItems(order.items);
@@ -1034,11 +1147,11 @@ function VendorPOPanel({ order, onSave }) {
   const vTotals = calcPOTotals(covers, "covers", coverState.overrides, coverState.customLines);
 
   const advanceCrates = () => {
-    const patch = advanceStatusPatch(crateState, order.poId, "C");
+    const patch = advanceStatusPatch(crateState, vpId, "C");
     if (patch) save({ crates: { ...crateState, ...patch } });
   };
   const advanceCovers = () => {
-    const patch = advanceStatusPatch(coverState, order.poId, "V");
+    const patch = advanceStatusPatch(coverState, vpId, "V");
     if (patch) save({ covers: { ...coverState, ...patch } });
   };
   const revertCrates = () => {
@@ -1056,20 +1169,20 @@ function VendorPOPanel({ order, onSave }) {
         <div className="dslbl" style={{ marginBottom: 0 }}>{open ? "▾" : "▸"} Vendor POs</div>
         {!open && (
           <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "#666" }}>
-            {order.poId ? `Crates: ${crateState.status} · Covers: ${coverState.status}` : "817 PO ID not set"}
+            {vpId ? `Crates: ${crateState.status} · Covers: ${coverState.status}` : "817 Project ID not set"}
           </div>
         )}
       </div>
-      {open && (!order.poId ? (
+      {open && (!vpId ? (
         <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: "#AAA", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-          Set the 817 PO ID first.
+          Set the 817 Project ID first.
         </div>
       ) : (
         <>
           <VendorPOSubCard
             title="Crates" vendor="Empaques Fuertes" mode="crates" results={crates}
             overrides={crateState.overrides} customLines={crateState.customLines} totals={cTotals} currency="MXN"
-            poId={order.poId} poState={crateState}
+            poId={vpId} poState={crateState}
             onAdvance={advanceCrates}
             onRevert={revertCrates}
             onToggleLock={(val) => save({ crates: { ...crateState, locked: val } })}
@@ -1081,7 +1194,7 @@ function VendorPOPanel({ order, onSave }) {
           <VendorPOSubCard
             title="Covers" vendor="Duco" mode="covers" results={covers}
             overrides={coverState.overrides} customLines={coverState.customLines} totals={vTotals} currency="MXN"
-            poId={order.poId} poState={coverState}
+            poId={vpId} poState={coverState}
             onAdvance={advanceCovers}
             onRevert={revertCovers}
             onToggleLock={(val) => save({ covers: { ...coverState, locked: val } })}
@@ -1102,17 +1215,42 @@ function AdminView() {
   const [tf, setTf] = useState("All");
   const [cf, setCf] = useState("All Categories");
   const [exp, setExp] = useState(null);
+  const [editId, setEditId] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => { const d = await loadOrders(); setOrders(d); setLoading(false); }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Saves edits to one order and logs each change as a footnote. Compares
+  // against the latest stored copy so the log reflects what really changed.
+  const saveEdits = async (orderId, edits) => {
+    const fresh = await loadOrders();
+    const before = fresh.find(o => o.id === orderId) || orders.find(o => o.id === orderId);
+    const total = edits.items ? orderTotal(edits.items) : before.total;
+    const after = { ...before, ...edits, total };
+    const now = new Date().toISOString();
+    const entries = describeChanges(before, after).map(e => ({ ...e, at: now, by: "817" }));
+    const fields = { ...edits, total };
+    if (entries.length) fields.changeLog = [...(before.changeLog || []), ...entries];
+    setOrders(prev => prev.map(o => (o.id === orderId ? { ...o, ...fields } : o)));
+    await patchOrder(orderId, fields);
+    return { ...before, ...fields };
+  };
+
   const updStatus = async (id, s) => {
+    const prevOrder = orders.find(o => o.id === id);
     const u = orders.map(o => o.id === id ? { ...o, status: s } : o);
     setOrders(u); await patchOrder(id, { status: s });
     if (s === "Quote Sent") {
       const order = u.find(o => o.id === id);
       if (order) fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order }) }).catch(() => {});
+    }
+    // Approval: email the final Invoice PDF (with project IDs). 817 always
+    // gets a copy; TFP only if Julian says so.
+    if (s === "In Production" && prevOrder && prevOrder.status !== "In Production") {
+      const order = u.find(o => o.id === id);
+      const toTFP = confirm(`Email the invoice for ${id} to TFP?\n\nOK = send to TFP (you and Eddy are copied)\nCancel = only you and Eddy get it`);
+      fetch("/api/send-invoice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order, notifyClient: toTFP }) }).catch(() => {});
     }
   };
   const updSamplePrice = async (orderId, price) => {
@@ -1193,6 +1331,9 @@ function AdminView() {
                   {isOpen && (
                     <tr key={order.id + "-d"} className="drow">
                       <td colSpan={7}>
+                        {editId === order.id ? (
+                          <OrderEditor order={order} onCancel={() => setEditId(null)} onSave={async edits => { await saveEdits(order.id, edits); setEditId(null); }} />
+                        ) : (
                         <div className="dinn">
                           <div>
                             <div className="dslbl">Line Items</div>
@@ -1205,7 +1346,7 @@ function AdminView() {
                                   return (
                                     <tr key={i}>
                                       <td className="lid">{it.id}</td>
-                                      <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}</td>
+                                      <td style={{ textTransform: "uppercase", fontSize: 11, fontWeight: 500 }}>{it.name}<FootRefs order={order} itemId={it.id} /></td>
                                       <td>{isSample ? "—" : it.qty}</td>
                                       <td style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
                                         {isQuote ? (
@@ -1269,6 +1410,10 @@ function AdminView() {
                             )}
                           </div>
                         </div>
+                        )}
+                        {(order.changeLog || []).length > 0 && (
+                          <div style={{ background: "#F5F4F1", padding: "0 32px 18px" }}><ChangeLog order={order} /></div>
+                        )}
                         <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
                           <div>
                             <div className="dslbl" style={{ marginBottom: 10 }}>Order Category</div>
@@ -1300,7 +1445,7 @@ function AdminView() {
                             </div>
                           ) : <div />}
                         </div>
-                        {["Quote Sent", "In Production", "Completed"].includes(order.status) && (
+                        {order.status !== "Cancelled" && (
                           <div style={{ background: "#fff", borderTop: "1px solid #DDDAD3", padding: "18px 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
                             <div>
                               <div className="dslbl" style={{ marginBottom: 10 }}>Approval Date</div>
@@ -1324,12 +1469,38 @@ function AdminView() {
                               />
                             </div>
                             <div>
-                              <div className="dslbl" style={{ marginBottom: 10 }}>817 PO ID</div>
+                              <div className="dslbl" style={{ marginBottom: 10 }}>Client Payment Date</div>
+                              <input
+                                type="date"
+                                defaultValue={order.paymentDate || ""}
+                                onBlur={e => { if (e.target.value !== (order.paymentDate || "")) updProjectInfo(order.id, "paymentDate", e.target.value); }}
+                                onClick={e => e.stopPropagation()}
+                                style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: "100%", letterSpacing: "0.04em" }}
+                              />
+                              {deliveryWindow(order.paymentDate) && (
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.06em", color: "#004D1A", marginTop: 6 }}>Est. delivery {fmtWindow(deliveryWindow(order.paymentDate))} (16–18 wks)</div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="dslbl" style={{ marginBottom: 10 }}>817 Project ID</div>
                               <input
                                 type="text"
-                                placeholder="e.g. 817-2026-001"
-                                defaultValue={order.poId || ""}
-                                onBlur={e => updProjectInfo(order.id, "poId", e.target.value)}
+                                placeholder="e.g. P-1046"
+                                key={"p817-" + order.id + "-" + orderIds(order).p817}
+                                defaultValue={orderIds(order).p817}
+                                onBlur={e => { const v = e.target.value.trim(); if (v !== orderIds(order).p817) updProjectInfo(order.id, "projectId817", v); }}
+                                onClick={e => e.stopPropagation()}
+                                style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: "100%", letterSpacing: "0.04em" }}
+                              />
+                            </div>
+                            <div>
+                              <div className="dslbl" style={{ marginBottom: 10 }}>TFP PO #</div>
+                              <input
+                                type="text"
+                                placeholder="e.g. PO-00042303"
+                                key={"tfp-" + order.id + "-" + orderIds(order).tfp}
+                                defaultValue={orderIds(order).tfp}
+                                onBlur={e => { const v = e.target.value.trim(); if (v !== orderIds(order).tfp) updProjectInfo(order.id, "tfpPoNumber", v); }}
                                 onClick={e => e.stopPropagation()}
                                 style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, border: "1px solid #C8C5BE", background: "#F5F4F1", padding: "7px 10px", outline: "none", color: "#0A0A0A", width: "100%", letterSpacing: "0.04em" }}
                               />
@@ -1350,10 +1521,7 @@ function AdminView() {
                                   e.preventDefault();
                                   // Get the current order from state (includes any edited prices)
                                   const current = orders.find(o => o.id === order.id);
-                                  const updated = orders.map(o => o.id === order.id ? { ...o, status: "Quote Sent" } : o);
-                                  setOrders(updated);
-                                  const final = updated.find(o => o.id === order.id);
-                                  await patchOrder(order.id, { status: "Quote Sent", items: final.items, total: final.total });
+                                  const final = await saveEdits(order.id, { items: current.items, status: "Quote Sent" }); // price changes are logged as footnotes
                                   const emailRes = await fetch("/api/send-quote-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: final }) });
                                   if (emailRes.ok) {
                                     alert("Quote confirmed and email sent to The Future Perfect.");
@@ -1365,6 +1533,8 @@ function AdminView() {
                                 Confirm &amp; Send Quote →
                               </button>
                             )}
+                            {order.status !== "Cancelled" && <InvoiceActions order={order} compact />}
+                            <button onClick={e => { e.stopPropagation(); setEditId(editId === order.id ? null : order.id); }} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", background: "#fff", color: "#0A0A0A", border: "1px solid #0A0A0A", padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>{editId === order.id ? "Close Editor" : "Edit Order"}</button>
                             <button className="delbtn" onClick={() => del(order.id)}>Delete Request</button>
                           </div>
                         </div>
@@ -1467,7 +1637,7 @@ export default function App() {
           ))}
         </div>
       )}
-      {view === "client" && <ClientView onSubmitted={() => setTick(t => t+1)} />}
+      {view === "client" && <ClientView isAdmin={isAdmin} onSubmitted={() => setTick(t => t+1)} />}
       {view === "history" && <ClientHistory key={tick} />}
       {view === "admin" && (isAdmin ? <AdminView key={tick} /> : <AdminLogin onLogin={() => { setIsAdmin(true); setView("admin"); }} />)}
     </div>

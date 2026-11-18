@@ -1,6 +1,8 @@
 // api/send-confirmation.js
 // Vercel serverless function — runs on the server, never exposed to the client
 
+import { invoiceAttachment } from "./_lib/invoicePdf.js";
+
 const ADMIN_EMAILS = ["julian@817hospitality.com", "eddy@817hospitality.com"];
 const CLIENT_EMAILS = ["jp@thefutureperfect.com", "purchasing@thefutureperfect.com", "julianlopezbirlain@gmail.com"];
 const FROM_EMAIL = "julian@817hospitality.com";
@@ -47,13 +49,15 @@ function buildLineItemsHtml(items) {
     .join("");
 }
 
-function buildEmailHtml({ order, isAdmin }) {
+function buildEmailHtml({ order, isAdmin, notifyClient }) {
   const typeLabel =
     order.requestType === "Purchase Order" ? "PURCHASE ORDER" : "QUOTE REQUEST";
   const hasSample = order.items.some((i) => i.id === "SAM-817");
 
   const intro = isAdmin
-    ? `A new <strong>${typeLabel}</strong> has been submitted by The Future Perfect.`
+    ? (order.enteredBy === "817"
+        ? `A new <strong>${typeLabel}</strong> was entered by 817 Hospitality on behalf of The Future Perfect.${notifyClient === false ? " The Future Perfect was <strong>not</strong> emailed." : ""}`
+        : `A new <strong>${typeLabel}</strong> has been submitted by The Future Perfect.`)
     : `Your <strong>${typeLabel}</strong> has been received by 817 Hospitality. We will be in touch shortly.`;
 
   return `
@@ -181,7 +185,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { order } = req.body;
+  const { order, notifyClient } = req.body;
 
   if (!order) {
     return res.status(400).json({ error: "Missing order data" });
@@ -196,6 +200,11 @@ export default async function handler(req, res) {
   const typeLabel =
     order.requestType === "Purchase Order" ? "Purchase Order" : "Quote Request";
 
+  // Pro forma / invoice PDF, attached to both emails. If it can't be built,
+  // the emails still go out without it.
+  const att = await invoiceAttachment(order);
+  const attachments = att ? { attachments: [att] } : {};
+
   try {
     // Send admin notification
     const adminRes = await fetch("https://api.resend.com/emails", {
@@ -208,7 +217,8 @@ export default async function handler(req, res) {
         from: FROM_EMAIL,
         to: ADMIN_EMAILS,
         subject: `[817 Portal] New ${typeLabel} — ${order.id}`,
-        html: buildEmailHtml({ order, isAdmin: true }),
+        html: buildEmailHtml({ order, isAdmin: true, notifyClient }),
+        ...attachments,
       }),
     });
 
@@ -217,7 +227,9 @@ export default async function handler(req, res) {
       throw new Error(`Admin email failed: ${JSON.stringify(err)}`);
     }
 
-    // Send client confirmation
+    // Send client confirmation — skipped when 817 entered the order and
+    // chose not to email TFP.
+    if (notifyClient !== false) {
     const clientRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -229,6 +241,7 @@ export default async function handler(req, res) {
         to: CLIENT_EMAILS,
         subject: `Your ${typeLabel} has been received — ${order.id}`,
         html: buildEmailHtml({ order, isAdmin: false }),
+        ...attachments,
       }),
     });
 
@@ -236,8 +249,9 @@ export default async function handler(req, res) {
       const err = await clientRes.json();
       throw new Error(`Client email failed: ${JSON.stringify(err)}`);
     }
+    }
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, pdf: !!att, clientEmailed: notifyClient !== false });
   } catch (error) {
     console.error("Email error:", error);
     return res.status(500).json({ error: error.message });

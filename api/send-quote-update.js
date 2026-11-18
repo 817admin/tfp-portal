@@ -1,3 +1,4 @@
+import { invoiceAttachment } from "./_lib/invoicePdf.js";
 const CLIENT_EMAILS = ["jp@thefutureperfect.com", "purchasing@thefutureperfect.com", "julianlopezbirlain@gmail.com", "julian@817hospitality.com", "eddy@817hospitality.com"];
 const FROM_EMAIL = "julian@817hospitality.com";
 const fmt = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:0}).format(n);
@@ -15,8 +16,9 @@ export default async function handler(req,res){
   const KEY=process.env.RESEND_API_KEY;
   if(!KEY)return res.status(500).json({error:"Missing key"});
   const ref=`<${order.id}@817hospitality.com>`;
+  const att=await invoiceAttachment(order); // pro forma / invoice PDF; email still sent if it fails
   try{
-    const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:`Bearer ${KEY}`,"Content-Type":"application/json"},body:JSON.stringify({from:FROM_EMAIL,to: CLIENT_EMAILS,subject:`Re: Your Quote Request — ${order.id}`,html:buildHtml(order),headers:{"In-Reply-To":ref,"References":ref}})});
+    const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:`Bearer ${KEY}`,"Content-Type":"application/json"},body:JSON.stringify({from:FROM_EMAIL,to: CLIENT_EMAILS,subject:`Re: Your Quote Request — ${order.id}`,html:buildHtml(order),headers:{"In-Reply-To":ref,"References":ref},...(att?{attachments:[att]}:{})})});
     if(!r.ok)throw new Error(JSON.stringify(await r.json()));
     return res.status(200).json({success:true});
   }catch(e){console.error(e);return res.status(500).json({error:e.message});}
